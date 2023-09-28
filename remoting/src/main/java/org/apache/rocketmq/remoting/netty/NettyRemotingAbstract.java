@@ -471,6 +471,7 @@ public abstract class NettyRemotingAbstract {
         final int opaque = request.getOpaque();
 
         try {
+            // 发起RPC请求，用来存储响应结果
             final ResponseFuture responseFuture = new ResponseFuture(channel, opaque, timeoutMillis, null, null);
             this.responseTable.put(opaque, responseFuture);
             final SocketAddress addr = channel.remoteAddress();
@@ -487,6 +488,7 @@ public abstract class NettyRemotingAbstract {
                 log.warn("Failed to write a request command to {}, caused by underlying I/O operation failure", addr);
             });
 
+            // 等待响应的到达。如果在超时时间内没有收到响应，将抛出异常
             RemotingCommand responseCommand = responseFuture.waitResponse(timeoutMillis);
             if (null == responseCommand) {
                 if (responseFuture.isSendRequestOK()) {
@@ -520,7 +522,9 @@ public abstract class NettyRemotingAbstract {
             final ResponseFuture responseFuture = new ResponseFuture(channel, opaque, timeoutMillis - costTime, invokeCallback, once);
             this.responseTable.put(opaque, responseFuture);
             try {
+                // 发送netty请求，并注册监听器
                 channel.writeAndFlush(request).addListener((ChannelFutureListener) f -> {
+                    // 标识请求发送成功
                     if (f.isSuccess()) {
                         responseFuture.setSendRequestOK(true);
                         return;

@@ -443,8 +443,8 @@ public class DefaultMQAdminExtTest {
     @Test
     public void testMessageTrackDetail() throws InterruptedException, RemotingException, MQClientException, MQBrokerException {
         MessageExt messageExt = new MessageExt();
-        messageExt.setMsgId("msgId");
-        messageExt.setTopic("unit-test");
+        messageExt.setMsgId("7F0000017B5C63947C6B0C8021070000");
+        messageExt.setTopic("order_topic");
         List<MessageTrack> messageTrackList = defaultMQAdminExt.messageTrackDetail(messageExt);
         assertThat(messageTrackList.size()).isEqualTo(2);
 

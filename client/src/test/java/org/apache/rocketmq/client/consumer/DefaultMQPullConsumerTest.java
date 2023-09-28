@@ -59,8 +59,8 @@ public class DefaultMQPullConsumerTest {
     private MQClientAPIImpl mQClientAPIImpl;
     private DefaultMQPullConsumer pullConsumer;
     private String consumerGroup = "FooBarGroup";
-    private String topic = "FooBar";
-    private String brokerName = "BrokerA";
+    private String topic = "TopicTest";
+    private String brokerName = "DESKTOP-HK1473K";
 
     @Before
     public void init() throws Exception {

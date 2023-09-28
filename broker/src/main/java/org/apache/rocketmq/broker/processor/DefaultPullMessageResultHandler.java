@@ -74,6 +74,20 @@ public class DefaultPullMessageResultHandler implements PullMessageResultHandler
         this.brokerController = brokerController;
     }
 
+    /**
+     * 处理消费者拉取消息请求的核心逻辑，其中包括了处理消息拉取结果、消息发送、流量控制、消息过滤等操作
+     * @param getMessageResult store result
+     * @param request request
+     * @param requestHeader request header
+     * @param channel channel
+     * @param subscriptionData sub data
+     * @param subscriptionGroupConfig sub config
+     * @param brokerAllowSuspend brokerAllowSuspend
+     * @param messageFilter store message filter
+     * @param response response
+     * @param mappingContext
+     * @return
+     */
     @Override
     public RemotingCommand handle(final GetMessageResult getMessageResult,
         final RemotingCommand request,
@@ -111,6 +125,9 @@ public class DefaultPullMessageResultHandler implements PullMessageResultHandler
             clientAddress);
 
         switch (response.getCode()) {
+            //成功拉取到消息。更新各种统计信息，然后根据服务器配置的是否使用堆内存存储来选择不同的处理方式。如果使用堆内存存储，
+            // 将消息内容作为响应的主体；如果不使用堆内存存储，使用文件传输 FileRegion 将消息内容发送给消费者。无论哪种方式，
+            // 都会在发送完成后释放消息
             case ResponseCode.SUCCESS:
                 this.brokerController.getBrokerStatsManager().incGroupGetNums(requestHeader.getConsumerGroup(), requestHeader.getTopic(),
                     getMessageResult.getMessageCount());
@@ -169,6 +186,7 @@ public class DefaultPullMessageResultHandler implements PullMessageResultHandler
                     }
                     return null;
                 }
+                // 未找到消息。如果允许挂起并且请求中带有挂起标志，将创建一个 PullRequest 并挂起该请求，等待后续消息到达
             case ResponseCode.PULL_NOT_FOUND:
                 final boolean hasSuspendFlag = PullSysFlag.hasSuspendFlag(requestHeader.getSysFlag());
                 final long suspendTimeoutMillisLong = hasSuspendFlag ? requestHeader.getSuspendTimeoutMillis() : 0;
@@ -187,8 +205,10 @@ public class DefaultPullMessageResultHandler implements PullMessageResultHandler
                     this.brokerController.getPullRequestHoldService().suspendPullRequest(topic, queueId, pullRequest);
                     return null;
                 }
+                // 立即重试拉取。通常表示在拉取消息时发生了一些问题，需要立即重试
             case ResponseCode.PULL_RETRY_IMMEDIATELY:
                 break;
+                // 偏移量发生了移动。处理方式根据是否是主从节点以及是否需要纠正偏移量来确定。
             case ResponseCode.PULL_OFFSET_MOVED:
                 if (this.brokerController.getMessageStoreConfig().getBrokerRole() != BrokerRole.SLAVE
                     || this.brokerController.getMessageStoreConfig().isOffsetCheckInSlave()) {

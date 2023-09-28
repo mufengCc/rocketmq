@@ -302,6 +302,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
         throws RemotingCommandException {
         RemotingCommand response = RemotingCommand.createResponseCommand(PullMessageResponseHeader.class);
         final PullMessageResponseHeader responseHeader = (PullMessageResponseHeader) response.readCustomHeader();
+        // 解码获取拉取消息请求头
         final PullMessageRequestHeader requestHeader =
             (PullMessageRequestHeader) request.decodeCommandCustomHeader(PullMessageRequestHeader.class);
 
@@ -317,6 +318,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
             return response;
         }
 
+        // 是否开启简单LitePull拉取模式
         if (request.getCode() == RequestCode.LITE_PULL_MESSAGE && !this.brokerController.getBrokerConfig().isLitePullMessageEnable()) {
             response.setCode(ResponseCode.NO_PERMISSION);
             responseHeader.setForbiddenType(ForbiddenType.BROKER_FORBIDDEN);
@@ -325,6 +327,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
             return response;
         }
 
+        // 获取订阅信息
         SubscriptionGroupConfig subscriptionGroupConfig =
             this.brokerController.getSubscriptionGroupManager().findSubscriptionGroupConfig(requestHeader.getConsumerGroup());
         if (null == subscriptionGroupConfig) {
@@ -333,6 +336,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
             return response;
         }
 
+        // 订阅信息存储，是否允许消费
         if (!subscriptionGroupConfig.isConsumeEnable()) {
             response.setCode(ResponseCode.NO_PERMISSION);
             responseHeader.setForbiddenType(ForbiddenType.GROUP_FORBIDDEN);
@@ -340,6 +344,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
             return response;
         }
 
+        // 获取topic信息
         TopicConfig topicConfig = this.brokerController.getTopicConfigManager().selectTopicConfig(requestHeader.getTopic());
         if (null == topicConfig) {
             LOGGER.error("the topic {} not exist, consumer: {}", requestHeader.getTopic(), RemotingHelper.parseChannelRemoteAddr(channel));
@@ -348,6 +353,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
             return response;
         }
 
+        // 是否有权限
         if (!PermName.isReadable(topicConfig.getPerm())) {
             response.setCode(ResponseCode.NO_PERMISSION);
             responseHeader.setForbiddenType(ForbiddenType.TOPIC_FORBIDDEN);
@@ -386,6 +392,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
                 break;
         }
 
+        // 使用Tag表达式过滤消息
         SubscriptionData subscriptionData = null;
         ConsumerFilterData consumerFilterData = null;
         final boolean hasSubscriptionFlag = PullSysFlag.hasSubscriptionFlag(requestHeader.getSysFlag());
@@ -470,6 +477,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
             }
         }
 
+        // 是否是tag过滤类型
         if (!ExpressionType.isTagType(subscriptionData.getExpressionType())
             && !this.brokerController.getBrokerConfig().isEnablePropertyFilter()) {
             response.setCode(ResponseCode.SYSTEM_ERROR);
@@ -486,7 +494,10 @@ public class PullMessageProcessor implements NettyRequestProcessor {
                 this.brokerController.getConsumerFilterManager());
         }
 
+        // 下面代码作用是用于处理消费者拉取消息请求时的流量控制，特别是针对消费者订阅的队列中是否包含"冷数据"的情况
+        // 获取消息存储数据对象
         final MessageStore messageStore = brokerController.getMessageStore();
+        // 是否是属于默认的消息存储引擎
         if (this.brokerController.getMessageStore() instanceof DefaultMessageStore) {
             DefaultMessageStore defaultMessageStore = (DefaultMessageStore)this.brokerController.getMessageStore();
             boolean cgNeedColdDataFlowCtr = brokerController.getColdDataCgCtrService().isCgNeedColdDataFlowCtr(requestHeader.getConsumerGroup());
@@ -494,13 +505,25 @@ public class PullMessageProcessor implements NettyRequestProcessor {
                 boolean isMsgLogicCold = defaultMessageStore.getCommitLog()
                     .getColdDataCheckService().isMsgInColdArea(requestHeader.getConsumerGroup(),
                         requestHeader.getTopic(), requestHeader.getQueueId(), requestHeader.getQueueOffset());
+                // 是否为冷数据
                 if (isMsgLogicCold) {
                     ConsumeType consumeType = this.brokerController.getConsumerManager().getConsumerGroupInfo(requestHeader.getConsumerGroup()).getConsumeType();
+                    // 消费模式为PUSH，则返回系统繁忙
                     if (consumeType == ConsumeType.CONSUME_PASSIVELY) {
                         response.setCode(ResponseCode.SYSTEM_BUSY);
                         response.setRemark("This consumer group is reading cold data. It has been flow control");
                         return response;
+                    // 消费模式为Pull
                     } else if (consumeType == ConsumeType.CONSUME_ACTIVELY) {
+                        // 如果允许Broker进行流量控制，则创建PullRequest对象，并将冷数据请求挂起，以便后续处理
+                        if (brokerAllowFlowCtrSuspend) {  // first arrived, which will not be held
+                            PullRequest pullRequest = new PullRequest(request, channel, 1000,
+                                this.brokerController.getMessageStore().now(), requestHeader.getQueueOffset(), subscriptionData, messageFilter);
+                            this.brokerController.getColdDataPullRequestHoldService().suspendColdDataReadRequest(pullRequest);
+                            return null;
+                        }
+                        // 否则，将 requestHeader 中的 maxMsgNums 设置为 1，表示只拉取一条消息
+                        requestHeader.setMaxMsgNums(1);
                         if (brokerAllowFlowCtrSuspend) {  // second arrived, which will not be held
                             PullRequest pullRequest = new PullRequest(request, channel, 1000,
                                 this.brokerController.getMessageStore().now(), requestHeader.getQueueOffset(), subscriptionData, messageFilter);
@@ -512,13 +535,16 @@ public class PullMessageProcessor implements NettyRequestProcessor {
                 }
             }
         }
+        // 结束
 
+        // 下面代码主要作用是处理消费者拉取消息请求
         final boolean useResetOffsetFeature = brokerController.getBrokerConfig().isUseServerSideResetOffset();
         String topic = requestHeader.getTopic();
         String group = requestHeader.getConsumerGroup();
         int queueId = requestHeader.getQueueId();
         Long resetOffset = brokerController.getConsumerOffsetManager().queryThenEraseResetOffset(topic, group, queueId);
 
+        // 构建消息拉取结果
         GetMessageResult getMessageResult = null;
         if (useResetOffsetFeature && null != resetOffset) {
             getMessageResult = new GetMessageResult();

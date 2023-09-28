@@ -83,6 +83,7 @@ public class DefaultMQProducerTest {
     private String topic = "FooBar";
     private String producerGroupPrefix = "FooBar_PID";
 
+
     @Before
     public void init() throws Exception {
         String producerGroupTemp = producerGroupPrefix + System.currentTimeMillis();

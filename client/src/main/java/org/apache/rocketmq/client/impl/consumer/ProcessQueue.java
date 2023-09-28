@@ -197,6 +197,7 @@ public class ProcessQueue {
                     result = this.queueOffsetMax + 1;
                     int removedCnt = 0;
                     for (MessageExt msg : msgs) {
+                        // 从msgTreeMap中移除当前消息
                         MessageExt prev = msgTreeMap.remove(msg.getQueueOffset());
                         if (prev != null) {
                             removedCnt--;
@@ -206,6 +207,7 @@ public class ProcessQueue {
                     msgCount.addAndGet(removedCnt);
 
                     if (!msgTreeMap.isEmpty()) {
+                        // 获取未被消费的首位偏移量，这里可能会出现重复消费问题。
                         result = msgTreeMap.firstKey();
                     }
                 }

@@ -726,6 +726,7 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
         long beginStartTime = System.currentTimeMillis();
         final Channel channel = this.getAndCreateChannel(addr);
         String channelRemoteAddr = RemotingHelper.parseChannelRemoteAddr(channel);
+        // 当前连接依旧存活
         if (channel != null && channel.isActive()) {
             try {
                 doBeforeRpcHooks(channelRemoteAddr, request);
@@ -733,6 +734,7 @@ public class NettyRemotingClient extends NettyRemotingAbstract implements Remoti
                 if (timeoutMillis < costTime) {
                     throw new RemotingTooMuchRequestException("invokeAsync call the addr[" + channelRemoteAddr + "] timeout");
                 }
+                // 发起netty网络请求
                 this.invokeAsyncImpl(channel, request, timeoutMillis - costTime, new InvokeCallbackWrapper(invokeCallback, addr));
             } catch (RemotingSendRequestException e) {
                 LOGGER.warn("invokeAsync: send request exception, so close the channel[{}]", channelRemoteAddr);

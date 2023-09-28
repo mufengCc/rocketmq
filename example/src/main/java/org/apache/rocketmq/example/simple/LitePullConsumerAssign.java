@@ -28,10 +28,11 @@ public class LitePullConsumerAssign {
     public static volatile boolean running = true;
 
     public static void main(String[] args) throws Exception {
-        DefaultLitePullConsumer litePullConsumer = new DefaultLitePullConsumer("please_rename_unique_group_name");
+        DefaultLitePullConsumer litePullConsumer = new DefaultLitePullConsumer("topic_test_consumer_group");
+        litePullConsumer.setNamesrvAddr("localhost:9876");
         litePullConsumer.setAutoCommit(false);
         litePullConsumer.start();
-        Collection<MessageQueue> mqSet = litePullConsumer.fetchMessageQueues("TopicTest");
+        Collection<MessageQueue> mqSet = litePullConsumer.fetchMessageQueues("order-topic");
         List<MessageQueue> list = new ArrayList<>(mqSet);
         List<MessageQueue> assignList = new ArrayList<>();
         for (int i = 0; i < list.size() / 2; i++) {
@@ -48,6 +49,5 @@ public class LitePullConsumerAssign {
         } finally {
             litePullConsumer.shutdown();
         }
-
     }
 }
