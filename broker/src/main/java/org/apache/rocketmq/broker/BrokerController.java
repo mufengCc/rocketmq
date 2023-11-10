@@ -778,21 +778,32 @@ public class BrokerController {
         return result;
     }
 
+    /**
+     * 初始化元数据
+     * 初始化消息存储
+     * 恢复和初始化commitLog 和 consumeQueue 相关的偏移量信息
+     */
     public boolean initialize() throws CloneNotSupportedException {
 
+        // 初始化元数据
         boolean result = this.initializeMetadata();
         if (!result) {
             return false;
         }
 
+        // 初始化消息存储
         result = this.initializeMessageStore();
         if (!result) {
             return false;
         }
 
+        // 从messageStore中恢复和初始化commitLog 和 consumeQueue 相关的偏移量信息
         return this.recoverAndInitService();
     }
 
+    /**
+     * 加载commitLog 和 consumeQueue文件中的数据
+     */
     public boolean recoverAndInitService() throws CloneNotSupportedException {
 
         boolean result = true;
@@ -804,6 +815,7 @@ public class BrokerController {
 
         if (messageStore != null) {
             registerMessageStoreHook();
+            // 加载commitLog 和 consumeQueue文件中的数据，并设置不同topic下不同队列的偏移量信息--核心
             result = this.messageStore.load();
         }
 
@@ -824,18 +836,25 @@ public class BrokerController {
 
         if (result) {
 
+            // 初始化远程处理netty服务器
             initializeRemotingServer();
 
+            // 初始化资源，包括远程处理服务器和线程执行器。
             initializeResources();
 
+            // 注册很多处理器
             registerProcessor();
 
+            // 初始化定时任务
             initializeScheduledTasks();
 
+            // 初始化事务服务
             initialTransaction();
 
+            // 初始化权限相关
             initialAcl();
 
+            // 初始化钩子函数
             initialRpcHooks();
 
             if (TlsSystemConfig.tlsMode != TlsMode.DISABLED) {

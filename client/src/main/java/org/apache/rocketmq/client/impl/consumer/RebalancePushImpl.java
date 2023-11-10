@@ -84,15 +84,26 @@ public class RebalancePushImpl extends RebalanceImpl {
         this.getmQClientFactory().sendHeartbeatToAllBrokerWithLockV2(true);
     }
 
+    /**
+     * 负载均衡时，移除不再需要的处理队列
+     *
+     * @param mq    消息队列
+     * @param pq    处理队列
+     */
     @Override
     public boolean removeUnnecessaryMessageQueue(MessageQueue mq, ProcessQueue pq) {
+        // 将指定的消息队列（mq）的消费进度（Offset）持久化到存储中，以确保消息的消费进度在 Consumer 重启后仍然可用
         this.defaultMQPushConsumerImpl.getOffsetStore().persist(mq);
+        // 从 Offset 存储中移除指定消息队列的消费进度信息。这通常是在不再需要消费该消息队列时执行的操作，以清除该队列的 Offset 信息
         this.defaultMQPushConsumerImpl.getOffsetStore().removeOffset(mq);
+        // 如果是顺序消费且是集群消费模式
         if (this.defaultMQPushConsumerImpl.isConsumeOrderly()
             && MessageModel.CLUSTERING.equals(this.defaultMQPushConsumerImpl.messageModel())) {
             try {
+                // 首先尝试获取处理队列对应的消费锁，这个是顺序消费时的第三把锁。这是为了确保只有一个线程在处理该消息队列的消息，以维护顺序性
                 if (pq.getConsumeLock().tryLock(1000, TimeUnit.MILLISECONDS)) {
                     try {
+                        // 向 Broker 发起解锁请求
                         return this.unlockDelay(mq, pq);
                     } finally {
                         pq.getConsumeLock().unlock();
@@ -257,12 +268,19 @@ public class RebalancePushImpl extends RebalanceImpl {
         }
     }
 
+    /**
+     * 将PullRequest加入PullMessageService,以便唤醒PullMessageService线程
+     *
+     * @param pullRequestList   拉取请求
+     * @param delay 延迟等级
+     */
     @Override
     public void dispatchPullRequest(final List<PullRequest> pullRequestList, final long delay) {
         for (PullRequest pullRequest : pullRequestList) {
             if (delay <= 0) {
                 this.defaultMQPushConsumerImpl.executePullRequestImmediately(pullRequest);
             } else {
+                // 将拉取消息请求-放入队列
                 this.defaultMQPushConsumerImpl.executePullRequestLater(pullRequest, delay);
             }
         }

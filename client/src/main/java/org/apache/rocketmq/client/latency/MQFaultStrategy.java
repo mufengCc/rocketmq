@@ -142,7 +142,9 @@ public class MQFaultStrategy {
 
     public MessageQueue selectOneMessageQueue(final TopicPublishInfo tpInfo, final String lastBrokerName, final boolean resetIndex) {
         BrokerFilter brokerFilter = threadBrokerFilter.get();
+
         brokerFilter.setLastBrokerName(lastBrokerName);
+        // 默认不启用broker故障延迟机制
         if (this.sendLatencyFaultEnable) {
             if (resetIndex) {
                 tpInfo.resetIndex();

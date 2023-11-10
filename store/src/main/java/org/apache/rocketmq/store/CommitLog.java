@@ -821,13 +821,19 @@ public class CommitLog implements Swappable {
         }
     }
 
+    /**
+     * 异步将消息写入commitLog文件中
+     *
+     * @param msg   消息
+     */
     public CompletableFuture<PutMessageResult> asyncPutMessage(final MessageExtBrokerInner msg) {
-        // Set the storage time
+        // 设置消息的存储时间戳
         if (!defaultMessageStore.getMessageStoreConfig().isDuplicationEnable()) {
             msg.setStoreTimestamp(System.currentTimeMillis());
         }
 
         // Set the message body CRC (consider the most appropriate setting on the client)
+        // 计算消息的消息体 CRC 校验码，用于校验消息体的完整性
         msg.setBodyCRC(UtilAll.crc32(msg.getBody()));
         // Back to Results
         AppendMessageResult result = null;
@@ -835,6 +841,8 @@ public class CommitLog implements Swappable {
         StoreStatsService storeStatsService = this.defaultMessageStore.getStoreStatsService();
 
         String topic = msg.getTopic();
+
+        // 设置消息的版本（MessageVersion），默认为 MESSAGE_VERSION_V1。如果启用了 autoMessageVersionOnTopicLen，并且消息主题的长度超过了 Byte.MAX_VALUE，则将消息的版本设置为 MESSAGE_VERSION_V2
         msg.setVersion(MessageVersion.MESSAGE_VERSION_V1);
         boolean autoMessageVersionOnTopicLen =
             this.defaultMessageStore.getMessageStoreConfig().isAutoMessageVersionOnTopicLen();
@@ -842,6 +850,7 @@ public class CommitLog implements Swappable {
             msg.setVersion(MessageVersion.MESSAGE_VERSION_V2);
         }
 
+        // 检查消息的 bornHost 和 storeHost 地址，如果它们是 IPv6 地址，设置对应的标志位
         InetSocketAddress bornSocketAddress = (InetSocketAddress) msg.getBornHost();
         if (bornSocketAddress.getAddress() instanceof Inet6Address) {
             msg.setBornHostV6Flag();
@@ -859,6 +868,7 @@ public class CommitLog implements Swappable {
         MappedFile unlockMappedFile = null;
         MappedFile mappedFile = this.mappedFileQueue.getLastMappedFile();
 
+        // 获取当前 Commit Log 中的写入位置（currOffset）
         long currOffset;
         if (mappedFile == null) {
             currOffset = 0;
@@ -866,9 +876,11 @@ public class CommitLog implements Swappable {
             currOffset = mappedFile.getFileFromOffset() + mappedFile.getWrotePosition();
         }
 
+        // 计算 needAckNums，表示需要的确认副本数。如果需要处理 HA，且 Broker 配置为 Controller 模式，且当前写入的位置的确认副本数小于最小确认副本数，则返回一个 PutMessageResult，状态为 IN_SYNC_REPLICAS_NOT_ENOUGH，表示确认副本数量不足。
         int needAckNums = this.defaultMessageStore.getMessageStoreConfig().getInSyncReplicas();
         boolean needHandleHA = needHandleHA(msg);
 
+        // 如果消息的 needHandleHA 为 true，并且 Broker 配置为 Slave 成为 Master 模式，根据存活的副本数和当前位置的确认副本数计算 needAckNums，如果需要的确认副本数大于确认副本的数量，也返回 IN_SYNC_REPLICAS_NOT_ENOUGH 状态
         if (needHandleHA && this.defaultMessageStore.getBrokerConfig().isEnableControllerMode()) {
             if (this.defaultMessageStore.getHaService().inSyncReplicasNums(currOffset) < this.defaultMessageStore.getMessageStoreConfig().getMinInSyncReplicas()) {
                 return CompletableFuture.completedFuture(new PutMessageResult(PutMessageStatus.IN_SYNC_REPLICAS_NOT_ENOUGH, null));
@@ -887,9 +899,11 @@ public class CommitLog implements Swappable {
             }
         }
 
+        // 锁定消息主题队列，确保消息写入操作是线程安全的
         topicQueueLock.lock(topicQueueKey);
         try {
 
+            // 如果消息需要分配 Offset，调用 defaultMessageStore.assignOffset(msg) 来为消息分配 Offset
             boolean needAssignOffset = true;
             if (defaultMessageStore.getMessageStoreConfig().isDuplicationEnable()
                 && defaultMessageStore.getMessageStoreConfig().getBrokerRole() != BrokerRole.SLAVE) {
@@ -899,15 +913,21 @@ public class CommitLog implements Swappable {
                 defaultMessageStore.assignOffset(msg);
             }
 
+            // 使用 putMessageThreadLocal 执行消息的编码操作，如果编码结果不为空，表示消息编码失败，直接返回编码结果
             PutMessageResult encodeResult = putMessageThreadLocal.getEncoder().encode(msg);
             if (encodeResult != null) {
                 return CompletableFuture.completedFuture(encodeResult);
             }
+
+            // 设置消息的编码缓冲区（encodedBuff）为 putMessageThreadLocal 中的编码器的缓冲区
             msg.setEncodedBuff(putMessageThreadLocal.getEncoder().getEncoderBuffer());
             PutMessageContext putMessageContext = new PutMessageContext(topicQueueKey);
 
+            // 使用 putMessageLock 锁定，保护多线程下的写入操作
             putMessageLock.lock(); //spin or ReentrantLock ,depending on store config
             try {
+
+                // 记录锁定操作开始的时间
                 long beginLockTimestamp = this.defaultMessageStore.getSystemClock().now();
                 this.beginTimeInLock = beginLockTimestamp;
 
@@ -917,6 +937,7 @@ public class CommitLog implements Swappable {
                     msg.setStoreTimestamp(beginLockTimestamp);
                 }
 
+                // 如果当前的 mappedFile 为空或已满，获取或创建一个新的 mappedFile，并根据配置设定文件读取模式
                 if (null == mappedFile || mappedFile.isFull()) {
                     mappedFile = this.mappedFileQueue.getLastMappedFile(0); // Mark: NewFile may be cause noise
                     if (isCloseReadAhead()) {
@@ -929,11 +950,15 @@ public class CommitLog implements Swappable {
                     return CompletableFuture.completedFuture(new PutMessageResult(PutMessageStatus.CREATE_MAPPED_FILE_FAILED, null));
                 }
 
+                // 使用 mappedFile.appendMessage 方法将消息追加到 mappedFile 中，返回一个 AppendMessageResult 对象表示追加结果
                 result = mappedFile.appendMessage(msg, this.appendMessageCallback, putMessageContext);
                 switch (result.getStatus()) {
+                    // 消息追加成功，继续执行下面的操作
                     case PUT_OK:
+                        // 空实现
                         onCommitLogAppend(msg, result, mappedFile);
                         break;
+                        // 消息追加成功，但需要创建新的 mappedFile，然后将消息重新追加，之后继续执行下面的操作
                     case END_OF_FILE:
                         onCommitLogAppend(msg, result, mappedFile);
                         unlockMappedFile = mappedFile;
@@ -953,10 +978,13 @@ public class CommitLog implements Swappable {
                             onCommitLogAppend(msg, result, mappedFile);
                         }
                         break;
+                        // 消息体或属性大小超出允许范围，返回 PutMessageResult，状态为 MESSAGE_ILLEGAL 不合法
                     case MESSAGE_SIZE_EXCEEDED:
                     case PROPERTIES_SIZE_EXCEEDED:
                         beginTimeInLock = 0;
                         return CompletableFuture.completedFuture(new PutMessageResult(PutMessageStatus.MESSAGE_ILLEGAL, result));
+
+                        // 其他状态：追加消息失败，返回 PutMessageResult，状态为 UNKNOWN_ERROR 未知异常
                     case UNKNOWN_ERROR:
                         beginTimeInLock = 0;
                         return CompletableFuture.completedFuture(new PutMessageResult(PutMessageStatus.UNKNOWN_ERROR, result));
@@ -965,33 +993,40 @@ public class CommitLog implements Swappable {
                         return CompletableFuture.completedFuture(new PutMessageResult(PutMessageStatus.UNKNOWN_ERROR, result));
                 }
 
+                // 在锁内部计算从锁定开始到消息追加完成的时间，然后解锁 putMessageLock
                 elapsedTimeInLock = this.defaultMessageStore.getSystemClock().now() - beginLockTimestamp;
                 beginTimeInLock = 0;
             } finally {
                 putMessageLock.unlock();
             }
-            // Increase queue offset when messages are successfully written
+
+            // 如果消息追加成功，增加队列 Offset，保证消息写入的顺序
             if (AppendMessageStatus.PUT_OK.equals(result.getStatus())) {
                 this.defaultMessageStore.increaseOffset(msg, getMessageNum(msg));
             }
         } finally {
+            // 解锁主题队列的锁
             topicQueueLock.unlock(topicQueueKey);
         }
 
+        // 如果消息在锁定期间的处理时间超过 500 毫秒，记录一个警告日志
         if (elapsedTimeInLock > 500) {
             log.warn("[NOTIFYME]putMessage in lock cost time(ms)={}, bodyLength={} AppendMessageResult={}", elapsedTimeInLock, msg.getBody().length, result);
         }
 
+        // 如果 unlockMappedFile 不为空，且启用了暖映射文件（WarmMapedFileEnable），则释放该 mappedFile
         if (null != unlockMappedFile && this.defaultMessageStore.getMessageStoreConfig().isWarmMapedFileEnable()) {
             this.defaultMessageStore.unlockMappedFile(unlockMappedFile);
         }
 
+        // 创建 PutMessageResult 对象，状态为 PUT_OK，表示消息成功写入
         PutMessageResult putMessageResult = new PutMessageResult(PutMessageStatus.PUT_OK, result);
 
-        // Statistics
+        // 更新存储统计信息，包括主题队列的消息总数和消息总大小
         storeStatsService.getSinglePutMessageTopicTimesTotal(msg.getTopic()).add(result.getMsgNum());
         storeStatsService.getSinglePutMessageTopicSizeTotal(topic).add(result.getWroteBytes());
 
+        // 调用 handleDiskFlushAndHA 方法处理磁盘刷盘和高可用性（HA）相关的操作，之后返回 PutMessageResult 对象。此处会等待刷盘操作和 HA 相关操作完成，之后返回结果
         return handleDiskFlushAndHA(putMessageResult, msg, needAckNums, needHandleHA);
     }
 
@@ -1185,16 +1220,25 @@ public class CommitLog implements Swappable {
         return true;
     }
 
+    /**
+     * 处理消息的磁盘刷盘和高可用性（HA）
+     *
+     * 这个方法的核心作用是等待磁盘刷盘和HA操作都完成，然后返回一个包含消息写入结果和磁盘刷盘和HA操作状态的 CompletableFuture，以便上层调用者能够获取到这些操作的结果。如果有任何一个操作失败，putMessageResult 的状态将被相应地更新
+     */
     private CompletableFuture<PutMessageResult> handleDiskFlushAndHA(PutMessageResult putMessageResult,
         MessageExt messageExt, int needAckNums, boolean needHandleHA) {
+        // 处理消息的磁盘刷盘操作,磁盘刷盘操作是将消息持久化到磁盘的过程,此处会等待磁盘刷盘操作完成
         CompletableFuture<PutMessageStatus> flushResultFuture = handleDiskFlush(putMessageResult.getAppendMessageResult(), messageExt);
         CompletableFuture<PutMessageStatus> replicaResultFuture;
         if (!needHandleHA) {
+            // 不需要HA（高可用），则直接返回
             replicaResultFuture = CompletableFuture.completedFuture(PutMessageStatus.PUT_OK);
         } else {
+            // 表示 HA（高可用） 相关的操作状态，就是主从复制的地方，必须也要等到从服务器，写入成功，才算成功
             replicaResultFuture = handleHA(putMessageResult.getAppendMessageResult(), putMessageResult, needAckNums);
         }
 
+        // 将磁盘刷盘操作的状态和 HA 操作的状态组合起来。如果磁盘刷盘或 HA 操作中有任何一个操作的状态不是 PUT_OK，则将 putMessageResult 的状态设置为相应的状态，然后返回 putMessageResult。如果两者的状态都是 PUT_OK，则 putMessageResult 保持不变，表示消息写入成功
         return flushResultFuture.thenCombine(replicaResultFuture, (flushStatus, replicaStatus) -> {
             if (flushStatus != PutMessageStatus.PUT_OK) {
                 putMessageResult.setPutMessageStatus(flushStatus);
@@ -1404,23 +1448,36 @@ public class CommitLog implements Swappable {
         private long lastFlushTimestamp = 0;
         private long printTimes = 0;
 
+        /**
+         * 异步刷盘的逻辑
+         */
         @Override
         public void run() {
             CommitLog.log.info(this.getServiceName() + " service started");
 
             while (!this.isStopped()) {
+
+                // 判断是否启用定时刷盘。默认为true
                 boolean flushCommitLogTimed = CommitLog.this.defaultMessageStore.getMessageStoreConfig().isFlushCommitLogTimed();
 
+                // 获取刷盘间隔时间，即每隔多长时间执行一次刷盘操作。默认为500ms
                 int interval = CommitLog.this.defaultMessageStore.getMessageStoreConfig().getFlushIntervalCommitLog();
+
+                // 获取最少需要刷盘的物理队列页数.默认4页
                 int flushPhysicQueueLeastPages = CommitLog.this.defaultMessageStore.getMessageStoreConfig().getFlushCommitLogLeastPages();
 
+                // 两次刷盘的最大间隔时间。默认为10s
+                //  如果刷盘的物理队列页数不满足4页，其实是不会刷盘的。这里引入10s的参数，就是要强制刷盘
                 int flushPhysicQueueThoroughInterval =
                     CommitLog.this.defaultMessageStore.getMessageStoreConfig().getFlushCommitLogThoroughInterval();
 
+                // 是否需要打印刷盘进度
                 boolean printFlushProgress = false;
 
-                // Print flush progress
+                // 当前时间戳
                 long currentTimeMillis = System.currentTimeMillis();
+
+                // 如果当前时间大于刷盘的间隔时间10s，则将最后一次的刷盘时间更改为当前时间，并设置刷盘的物理队列页数为0
                 if (currentTimeMillis >= (this.lastFlushTimestamp + flushPhysicQueueThoroughInterval)) {
                     this.lastFlushTimestamp = currentTimeMillis;
                     flushPhysicQueueLeastPages = 0;
@@ -1428,22 +1485,33 @@ public class CommitLog implements Swappable {
                 }
 
                 try {
+
+                    // true。默认开启了定时刷盘
                     if (flushCommitLogTimed) {
+                        // 线程会休眠500ms
                         Thread.sleep(interval);
                     } else {
                         this.waitForRunning(interval);
                     }
 
+                    // 打印刷盘印度，默认空实现
                     if (printFlushProgress) {
                         this.printFlushProgress();
                     }
 
                     long begin = System.currentTimeMillis();
+
+                    // 执行刷盘操作，将内存中的数据刷写到磁盘。并传入刷盘的页数。
                     CommitLog.this.mappedFileQueue.flush(flushPhysicQueueLeastPages);
+
+                    // 获取刷盘后的存储时间戳
                     long storeTimestamp = CommitLog.this.mappedFileQueue.getStoreTimestamp();
+
+                    // 更新存储检查点，为了后续恢复做准备
                     if (storeTimestamp > 0) {
                         CommitLog.this.defaultMessageStore.getStoreCheckpoint().setPhysicMsgTimestamp(storeTimestamp);
                     }
+
                     long past = System.currentTimeMillis() - begin;
                     CommitLog.this.getMessageStore().getPerfCounter().flowOnce("FLUSH_DATA_TIME_MS", (int) past);
                     if (past > 500) {
@@ -1455,7 +1523,7 @@ public class CommitLog implements Swappable {
                 }
             }
 
-            // Normal shutdown, to ensure that all the flush before exit
+            // 执行正常的关闭操作，以确保在退出之前刷写所有剩余的数据到磁盘
             boolean result = false;
             for (int i = 0; i < RETRY_TIMES_OVER && !result; i++) {
                 result = CommitLog.this.mappedFileQueue.flush(0);
@@ -1554,10 +1622,10 @@ public class CommitLog implements Swappable {
         }
 
         private void doCommit() {
+            // 否存在待提交的消息请求
             if (!this.requestsRead.isEmpty()) {
                 for (GroupCommitRequest req : this.requestsRead) {
-                    // There may be a message in the next file, so a maximum of
-                    // two times the flush
+                    // 尝试最多两次刷盘操作。这是为了确保消息被刷写到磁盘
                     boolean flushOK = CommitLog.this.mappedFileQueue.getFlushedWhere() >= req.getNextOffset();
                     for (int i = 0; i < 2 && !flushOK; i++) {
                         CommitLog.this.mappedFileQueue.flush(0);
@@ -1974,28 +2042,35 @@ public class CommitLog implements Swappable {
             }
         }
 
+        /**
+         * 刷盘
+         * 其作用是处理磁盘刷盘操作，并返回一个 CompletableFuture 对象，表示刷盘操作的结果。
+         */
         @Override
         public CompletableFuture<PutMessageStatus> handleDiskFlush(AppendMessageResult result, MessageExt messageExt) {
-            // Synchronization flush
+            // 同步刷盘
             if (FlushDiskType.SYNC_FLUSH == CommitLog.this.defaultMessageStore.getMessageStoreConfig().getFlushDiskType()) {
                 final GroupCommitService service = (GroupCommitService) this.flushCommitLogService;
                 if (messageExt.isWaitStoreMsgOK()) {
+                    // 组提交
                     GroupCommitRequest request = new GroupCommitRequest(result.getWroteOffset() + result.getWroteBytes(), CommitLog.this.defaultMessageStore.getMessageStoreConfig().getSyncFlushTimeout());
                     flushDiskWatcher.add(request);
                     service.putRequest(request);
                     return request.future();
                 } else {
                     service.wakeup();
+                    // 阻塞等待获取刷盘结果
                     return CompletableFuture.completedFuture(PutMessageStatus.PUT_OK);
                 }
             }
-            // Asynchronous flush
+            // 异步刷盘
             else {
                 if (!CommitLog.this.defaultMessageStore.isTransientStorePoolEnable()) {
                     flushCommitLogService.wakeup();
                 } else {
                     commitRealTimeService.wakeup();
                 }
+                // 直接返回成功
                 return CompletableFuture.completedFuture(PutMessageStatus.PUT_OK);
             }
         }

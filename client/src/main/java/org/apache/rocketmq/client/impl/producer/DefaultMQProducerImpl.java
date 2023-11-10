@@ -221,7 +221,6 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                 /**
                  场景1：
                  从 producerTable 中，获取所有的生产者信息，然后将生产者作为key， topic的路由信息作为value，存在 topicPublishInfoTable map 中，详见MQClientInstance 728行
-
                  */
                 boolean registerOK = mQClientFactory.registerProducer(this.defaultMQProducer.getProducerGroup(), this);
                 if (!registerOK) {
@@ -690,6 +689,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
 
         if (topicPublishInfo != null && topicPublishInfo.ok()) {
             boolean callTimeout = false;
+            // 发送消息队列
             MessageQueue mq = null;
             Exception exception = null;
             SendResult sendResult = null;
@@ -704,6 +704,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
             boolean resetIndex = false;
             for (; times < timesTotal; times++) {
                 // 获取发送的BrokerName
+                // 首次为null，当发送失败了，则是首次的brokerName且开启了broker故障规避机制，就不选择首次发送失败的broker了
                 String lastBrokerName = null == mq ? null : mq.getBrokerName();
                 if (times > 0) {
                     resetIndex = true;
@@ -864,6 +865,17 @@ public class DefaultMQProducerImpl implements MQProducerInner {
         }
     }
 
+    /**
+     * 发送消核心实现
+     *
+     * @param msg   待发送消息
+     * @param mq    消息将发送到该消息队列上
+     * @param communicationMode 消息发送模式。同步、异步、Oneway
+     * @param sendCallback  异步消息回调函数
+     * @param topicPublishInfo  主题路由信息
+     * @param timeout           消息发送超时时间
+     * @return                  消息发送结果
+     */
     private SendResult sendKernelImpl(final Message msg,
                                       final MessageQueue mq,
                                       final CommunicationMode communicationMode,
@@ -871,9 +883,12 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                                       final TopicPublishInfo topicPublishInfo,
                                       final long timeout) throws MQClientException, RemotingException, MQBrokerException, InterruptedException {
         long beginStartTime = System.currentTimeMillis();
+        // 获取broker名称
         String brokerName = this.mQClientFactory.getBrokerNameFromMessageQueue(mq);
+        // 获取broker地址
         String brokerAddr = this.mQClientFactory.findBrokerAddressInPublish(brokerName);
         if (null == brokerAddr) {
+            // 如果为null，则再从nameServer中同步即可
             tryToFindTopicPublishInfo(mq.getTopic());
             brokerName = this.mQClientFactory.getBrokerNameFromMessageQueue(mq);
             brokerAddr = this.mQClientFactory.findBrokerAddressInPublish(brokerName);
@@ -898,6 +913,8 @@ public class DefaultMQProducerImpl implements MQProducerInner {
 
                 int sysFlag = 0;
                 boolean msgBodyCompressed = false;
+
+                // 如果消息大小超过4kb，则进行消息压缩
                 if (this.tryToCompressMessage(msg)) {
                     sysFlag |= MessageSysFlag.COMPRESSED_FLAG;
                     sysFlag |= compressType.getCompressionFlag();
@@ -944,6 +961,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                     this.executeSendMessageHookBefore(context);
                 }
 
+                // 构建消息发送请求参数
                 SendMessageRequestHeader requestHeader = new SendMessageRequestHeader();
                 requestHeader.setProducerGroup(this.defaultMQProducer.getProducerGroup());
                 requestHeader.setTopic(msg.getTopic());
@@ -998,7 +1016,7 @@ public class DefaultMQProducerImpl implements MQProducerInner {
                         if (timeout < costTimeAsync) {
                             throw new RemotingTooMuchRequestException("sendKernelImpl call timeout");
                         }
-                        // 发送消息 核心
+                        // 发送消息--向broker发起请求并处理响应结果
                         sendResult = this.mQClientFactory.getMQClientAPIImpl().sendMessage(
                                 brokerAddr,
                                 brokerName,

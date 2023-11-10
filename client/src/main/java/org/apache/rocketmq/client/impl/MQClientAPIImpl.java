@@ -1635,7 +1635,7 @@ public class MQClientAPIImpl implements NameServerUpdateCallback {
         return response.getCode() == ResponseCode.SUCCESS;
     }
 
-    public void consumerSendMessageBack(
+    public void  consumerSendMessageBack(
         final String addr,
         final String brokerName,
         final MessageExt msg,
@@ -1645,6 +1645,8 @@ public class MQClientAPIImpl implements NameServerUpdateCallback {
         final int maxConsumeRetryTimes
     ) throws RemotingException, MQBrokerException, InterruptedException {
         ConsumerSendMsgBackRequestHeader requestHeader = new ConsumerSendMsgBackRequestHeader();
+        // 消息消费失败请求
+        // 服务端处理请求：org.apache.rocketmq.broker.processor.SendMessageProcessor#processRequest();
         RemotingCommand request = RemotingCommand.createRequestCommand(RequestCode.CONSUMER_SEND_MSG_BACK, requestHeader);
 
         requestHeader.setGroup(consumerGroup);

@@ -88,13 +88,22 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
         this.consumeMessageHookList = consumeMessageHookList;
     }
 
+    /**
+     * 处理了消费者发送回消息的逻辑，允许消费者将某些消息重新发送到消息队列，以便重新消费或处理消费失败的情况。
+     * 这有助于处理消息消费过程中的问题，确保消息最终能够被成功消费。
+     *
+     * 也是创建重试队列和死信独立的入口
+     */
     protected RemotingCommand consumerSendMsgBack(final ChannelHandlerContext ctx, final RemotingCommand request)
         throws RemotingCommandException {
         final RemotingCommand response = RemotingCommand.createResponseCommand(null);
+        // 解析消费者发送回消息的相关信息，其中包含了发送回消息所需的信息，例如消费者组名、消息的原始主题等
         final ConsumerSendMsgBackRequestHeader requestHeader =
             (ConsumerSendMsgBackRequestHeader) request.decodeCommandCustomHeader(ConsumerSendMsgBackRequestHeader.class);
 
         // The send back requests sent to SlaveBroker will be forwarded to the master broker beside
+        // 检查主从模式：检查当前 Broker 是否为主 Broker。如果不是主 Broker，表示当前 Broker 是从 Broker，
+        //  需要将请求发送到主 Broker 来处理发送回消息的操作。这是为了确保操作在主 Broker 上执行，以保证数据一致性
         final BrokerController masterBroker = this.brokerController.peekMasterBroker();
         if (null == masterBroker) {
             response.setCode(ResponseCode.SYSTEM_ERROR);
@@ -106,6 +115,7 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
         // It may be a master broker or a slave broker
         final BrokerController currentBroker = this.brokerController;
 
+        // 获取订阅组配置：从主 Broker 的订阅组管理器获取消费者组的订阅配置信息。如果配置不存在，说明该消费者组没有正确配置，返回相应的错误响应
         SubscriptionGroupConfig subscriptionGroupConfig =
             masterBroker.getSubscriptionGroupManager().findSubscriptionGroupConfig(requestHeader.getGroup());
         if (null == subscriptionGroupConfig) {
@@ -116,19 +126,24 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
         }
 
         BrokerConfig masterBrokerConfig = masterBroker.getBrokerConfig();
+        // 校验权限：检查主 Broker 是否具有写权限（PermName.isWriteable），如果没有写权限，则返回无权限的错误响应
         if (!PermName.isWriteable(masterBrokerConfig.getBrokerPermission())) {
             response.setCode(ResponseCode.NO_PERMISSION);
             response.setRemark("the broker[" + masterBrokerConfig.getBrokerIP1() + "] sending message is forbidden");
             return response;
         }
 
+        // 检查重试队列：检查是否支持重试队列。如果重试队列数量小于等于0，表示不支持重试队列，直接返回成功的响应
         if (subscriptionGroupConfig.getRetryQueueNums() <= 0) {
             response.setCode(ResponseCode.SUCCESS);
             response.setRemark(null);
             return response;
         }
 
+        // 构建重试队列 Topic：根据消费组名和随机数生成一个新的 Topic 名称，这个 Topic 名称用于存储重试队列的消息。如果消息重试失败，会将消息发送到这个 Topic
+        // 重试队列topic：例如："%RETRY%"topic_consumer_group
         String newTopic = MixAll.getRetryTopic(requestHeader.getGroup());
+        // 随机选择一个数字
         int queueIdInt = this.random.nextInt(subscriptionGroupConfig.getRetryQueueNums());
 
         int topicSysFlag = 0;
@@ -136,11 +151,14 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
             topicSysFlag = TopicSysFlag.buildSysFlag(false, true);
         }
 
-        // Create retry topic to master broker
+        // 创建 Topic 配置：创建或获取重试队列 Topic 的配置，包括写权限和读权限。如果 Topic 配置不存在，返回相应的错误响应
+        // 创建重试队列，重试主题名称为%RETRY%+消费者组名称
         TopicConfig topicConfig = masterBroker.getTopicConfigManager().createTopicInSendMessageBackMethod(
             newTopic,
             subscriptionGroupConfig.getRetryQueueNums(),
             PermName.PERM_WRITE | PermName.PERM_READ, topicSysFlag);
+
+        // 创建失败，则响应系统异常
         if (null == topicConfig) {
             response.setCode(ResponseCode.SYSTEM_ERROR);
             response.setRemark("topic[" + newTopic + "] not exist");
@@ -153,7 +171,7 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
             return response;
         }
 
-        // Look message from the origin message store
+        // 根据消息offset，从commitLog中获取消息
         MessageExt msgExt = currentBroker.getMessageStore().lookMessageByOffset(requestHeader.getOffset());
         if (null == msgExt) {
             response.setCode(ResponseCode.SYSTEM_ERROR);
@@ -167,8 +185,10 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
         }
         msgExt.setWaitStoreMsgOK(false);
 
+        // 延迟等级
         int delayLevel = requestHeader.getDelayLevel();
 
+        // 设置最大重试次数
         int maxReconsumeTimes = subscriptionGroupConfig.getRetryMaxTimes();
         if (request.getVersion() >= MQVersion.Version.V3_4_9.ordinal()) {
             Integer times = requestHeader.getMaxReconsumeTimes();
@@ -177,7 +197,10 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
             }
         }
 
+        // 是否为死信队列
         boolean isDLQ = false;
+
+        // 设置是否为死信队列：如果消息的重试次数达到最大重试次数或延迟级别小于0，则将消息标记为死信队列，准备发送到死信队列
         if (msgExt.getReconsumeTimes() >= maxReconsumeTimes
             || delayLevel < 0) {
 
@@ -188,11 +211,14 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
                 .build();
             BrokerMetricsManager.sendToDlqMessages.add(1, attributes);
 
+            // 设置死信队列标志
             isDLQ = true;
+            // 设置死信队列topic，此时会将刚刚的重试队列名称修改为死信队列的名称
             newTopic = MixAll.getDLQTopic(requestHeader.getGroup());
             queueIdInt = randomQueueId(DLQ_NUMS_PER_GROUP);
 
             // Create DLQ topic to master broker
+            // 创建死信队列
             topicConfig = masterBroker.getTopicConfigManager().createTopicInSendMessageBackMethod(newTopic,
                 DLQ_NUMS_PER_GROUP,
                 PermName.PERM_WRITE | PermName.PERM_READ, 0);
@@ -211,7 +237,9 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
             msgExt.setDelayTimeLevel(delayLevel);
         }
 
+        // 创建新消息：创建一个新的消息对象（msgInner），这个消息包含了要发送回的内容，其中 Topic 可能是重试队列或者死信队列
         MessageExtBrokerInner msgInner = new MessageExtBrokerInner();
+        // 这个newTopic：可能是死信队列、也可能是重试队列
         msgInner.setTopic(newTopic);
         msgInner.setBody(msgExt.getBody());
         msgInner.setFlag(msgExt.getFlag());
@@ -233,7 +261,10 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
         boolean succeeded = false;
 
         // Put retry topic to master message store
+        // 尝试将消息写入 Commit Log：调用主 Broker 的消息存储模块，将构建的重试消息写入 Commit Log 文件
         PutMessageResult putMessageResult = masterBroker.getMessageStore().putMessage(msgInner);
+
+        // 处理响应：如果消息成功写入 Commit Log，则返回成功的响应，否则返回系统错误响应
         if (putMessageResult != null) {
             String commercialOwner = request.getExtFields().get(BrokerStatsManager.COMMERCIAL_OWNER);
 
@@ -244,6 +275,7 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
                     if (correctTopic != null) {
                         backTopic = correctTopic;
                     }
+
                     if (TopicValidator.RMQ_SYS_SCHEDULE_TOPIC.equals(msgInner.getTopic())) {
                         masterBroker.getBrokerStatsManager().incTopicPutNums(msgInner.getTopic());
                         masterBroker.getBrokerStatsManager().incTopicPutSize(msgInner.getTopic(), putMessageResult.getAppendMessageResult().getWroteBytes());
@@ -285,6 +317,7 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
                 response.setRemark(putMessageResult.getPutMessageStatus().name());
             }
         } else {
+            // 消息写入失败，响应系统异常。调用者会将延迟5s再次消费该消息。
             if (isDLQ) {
                 String owner = request.getExtFields().get(BrokerStatsManager.COMMERCIAL_OWNER);
                 String uniqKey = msgInner.getProperties().get(MessageConst.PROPERTY_UNIQ_CLIENT_MESSAGE_ID_KEYIDX);
@@ -301,6 +334,7 @@ public abstract class AbstractSendMessageProcessor implements NettyRequestProces
             response.setRemark("putMessageResult is null");
         }
 
+        // 执行钩子函数
         if (this.hasConsumeMessageHook() && !UtilAll.isBlank(requestHeader.getOriginMsgId())) {
             String namespace = NamespaceUtil.getNamespaceFromResource(requestHeader.getGroup());
             ConsumeMessageContext context = new ConsumeMessageContext();

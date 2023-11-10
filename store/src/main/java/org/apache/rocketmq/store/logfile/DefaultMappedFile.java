@@ -59,6 +59,10 @@ import sun.misc.Unsafe;
 import sun.nio.ch.DirectBuffer;
 
 public class DefaultMappedFile extends AbstractMappedFile {
+
+    /**
+     * 操作系统每页大小，默认4kb
+     */
     public static final int OS_PAGE_SIZE = 1024 * 4;
     public static final Unsafe UNSAFE = getUnsafe();
     private static final Method IS_LOADED_METHOD;
@@ -66,29 +70,80 @@ public class DefaultMappedFile extends AbstractMappedFile {
 
     protected static final Logger log = LoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
 
+    // 当前JVM实例中MappedFile的虚拟内存
     protected static final AtomicLong TOTAL_MAPPED_VIRTUAL_MEMORY = new AtomicLong(0);
 
+    // 当前JVM实例中MappedFile对象个数
     protected static final AtomicInteger TOTAL_MAPPED_FILES = new AtomicInteger(0);
 
     protected static final AtomicIntegerFieldUpdater<DefaultMappedFile> WROTE_POSITION_UPDATER;
     protected static final AtomicIntegerFieldUpdater<DefaultMappedFile> COMMITTED_POSITION_UPDATER;
     protected static final AtomicIntegerFieldUpdater<DefaultMappedFile> FLUSHED_POSITION_UPDATER;
 
+    /**
+     * 当前文件的写指针，从0开始(内存映射文件中的写
+     * 指针)。
+     */
     protected volatile int wrotePosition;
+
+    /**
+     * 当前文件的提交指针，如果开启 transientStorePoolEnable，则数据会存储在 TransientStorePool 中，然后提交到内存映射 ByteBuffer 中，再写入磁盘。
+     */
     protected volatile int committedPosition;
+
+    /**
+     * 当前文件的刷盘指针
+     * 将该指针之前的数据持久化存储到磁盘中
+     */
     protected volatile int flushedPosition;
+
+    /**
+     * 文件大小
+     */
     protected int fileSize;
+
+    /**
+     * 文件通道
+     */
     protected FileChannel fileChannel;
     /**
-     * Message will put to here first, and then reput to FileChannel if writeBuffer is not null.
+     * 堆外内存 ByteBuffer，如果不为空，数据首先将存储在该Buffer 中，然后提交到 MappedFile 创建的 FileChannel 中。transientStorePoolEnable为 true时不为空
      */
     protected ByteBuffer writeBuffer = null;
+
+    /**
+     * 堆外内存池，该内存池中的内存会提供内存锁机制.transientStorePoolEnable为 true 时启用
+     */
     protected TransientStorePool transientStorePool = null;
+
+    /**
+     * 文件名称
+     */
     protected String fileName;
+
+    /**
+     * 该文件的初始偏移量
+     */
     protected long fileFromOffset;
+
+    /**
+     * 物理文件
+     */
     protected File file;
+
+    /**
+     * 物理文件对应的内存映射 Buffer。
+     */
     protected MappedByteBuffer mappedByteBuffer;
+
+    /**
+     * 文件最后一次写入内容的时间
+     */
     protected volatile long storeTimestamp = 0;
+
+    /**
+     * 是否是MappedFileQueue 队列中第一个文件
+     */
     protected boolean firstCreateInQueue = false;
     private long lastFlushTime = -1L;
 
@@ -358,21 +413,33 @@ public class DefaultMappedFile extends AbstractMappedFile {
     }
 
     /**
-     * @return The current flushed position
+     * 执行实际的刷盘操作
+     *
+     * @return 返回的是刷盘操作完成后，当前文件的偏移量
      */
     @Override
     public int flush(final int flushLeastPages) {
+
+        // 检查是否可以执行刷盘操作，即是否达到了刷盘的条件
         if (this.isAbleToFlush(flushLeastPages)) {
+
+            // 如果可以执行刷盘操作，尝试获取对 MappedFile 的锁
             if (this.hold()) {
+
+                // 获取当前读取的位置，即文件中的偏移量
                 int value = getReadPosition();
 
                 try {
+
+                    // 增加对 mappedByteBuffer 的访问计数，用于检查是否需要执行内存页的切换
                     this.mappedByteBufferAccessCountSinceLastSwap++;
 
-                    //We only append data to fileChannel or mappedByteBuffer, never both.
+                    // 检查是否使用了 writeBuffer 或者文件通道（fileChannel），如果使用其中之一，表示数据被写入到了缓冲区（writeBuffer）或文件通道，而不是 mappedByteBuffer
                     if (writeBuffer != null || this.fileChannel.position() != 0) {
+                        // 如果数据被写入到文件通道（fileChannel），则使用 force 方法强制将数据刷写到磁盘，false 表示非阻塞模式
                         this.fileChannel.force(false);
                     } else {
+                        // 如果数据被写入到 mappedByteBuffer，则使用 force 方法强制将数据刷写到磁盘
                         this.mappedByteBuffer.force();
                     }
                     this.lastFlushTime = System.currentTimeMillis();
@@ -380,6 +447,7 @@ public class DefaultMappedFile extends AbstractMappedFile {
                     log.error("Error occurred when force data to disk.", e);
                 }
 
+                // 更新 MappedFile 的已刷写位置，将其设置为当前的读取位置
                 FLUSHED_POSITION_UPDATER.set(this, value);
                 this.release();
             } else {
@@ -387,6 +455,7 @@ public class DefaultMappedFile extends AbstractMappedFile {
                 FLUSHED_POSITION_UPDATER.set(this, getReadPosition());
             }
         }
+        // 返回已刷写的位置，即文件的偏移量
         return this.getFlushedPosition();
     }
 

@@ -233,6 +233,8 @@ public class ConsumerOffsetManager extends ConfigManager {
      * @param topic Topic
      * @param queueId Queue ID
      * @return current consume offset or reset offset if there were one.
+     *
+     * 如果目标队列具有临时重置偏移量，则返回重置偏移量。否则，返回偏移存储中的当前消耗偏移。
      */
     public long queryOffset(final String group, final String topic, final int queueId) {
         // topic@group

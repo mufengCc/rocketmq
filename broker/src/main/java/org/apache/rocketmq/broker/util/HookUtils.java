@@ -126,6 +126,13 @@ public class HookUtils {
         return null;
     }
 
+    /**
+     * 钩子函数，将消息队列topic更改为SCHEDULE_TOPIC_XXXX
+     *
+     * @param brokerController
+     * @param msg   消息
+     * @return
+     */
     public static PutMessageResult handleScheduleMessage(BrokerController brokerController,
         final MessageExtBrokerInner msg) {
         final int tranType = MessageSysFlag.getTransactionValue(msg.getSysFlag());
@@ -144,6 +151,7 @@ public class HookUtils {
                 }
             }
             // Delay Delivery
+            // 将原来的topic队列名称，更改为SCHEDULE_TOPIC_XXX队列
             if (msg.getDelayTimeLevel() > 0) {
                 transformDelayLevelMessage(brokerController, msg);
             }

@@ -131,29 +131,52 @@ public class ScheduleMessageService extends ConfigManager {
         return storeTimestamp + 1000;
     }
 
+    /**
+     * 延迟队列的定时任务初始化
+     * 根据不同的延迟等级，创建不同的定时任务。
+     *
+     * 初始化了RocketMQ的延迟消息队列的定时任务，根据不同的延迟等级和延迟时间，定期执行任务以处理和投递延迟消息。这是延迟消息功能的核心机制之一，确保消息在指定的延迟时间后被正确处理和投递
+     */
     public void start() {
         if (started.compareAndSet(false, true)) {
+
+            // 加载延迟队列的delayOffset.json文件，该文件存储了不同延迟等级的偏移量信息，用于恢复在Broker重启后已经在延迟队列中的消息
             this.load();
+
+            // 创建线程池，调度投递延迟消息的任务
             this.deliverExecutorService = new ScheduledThreadPoolExecutor(this.maxDelayLevel, new ThreadFactoryImpl("ScheduleMessageTimerThread_"));
+
             if (this.enableAsyncDeliver) {
+                // 创建线程池，处理异步投递结果的任务
                 this.handleExecutorService = new ScheduledThreadPoolExecutor(this.maxDelayLevel, new ThreadFactoryImpl("ScheduleMessageExecutorHandleThread_"));
             }
+
+            // 遍历不同的延迟等级，创建不同的定时任务
             for (Map.Entry<Integer, Long> entry : this.delayLevelTable.entrySet()) {
+                // 延迟等级
                 Integer level = entry.getKey();
+                // 延迟时间,这个时间表示消息应该在多少毫秒后被投递
                 Long timeDelay = entry.getValue();
+
+                // 根据延迟等级获取对应的offset偏移量。在delayOffset.json文件中存储了每个延迟等级的消息偏移量
                 Long offset = this.offsetTable.get(level);
                 if (null == offset) {
                     offset = 0L;
                 }
 
+                // 如果timeDelay不为空，表示该延迟等级下有消息需要处理，就会创建相应的定时任务来处理这些消息
                 if (timeDelay != null) {
+                    // 创建定时任务
                     if (this.enableAsyncDeliver) {
+                        // 如果启用了异步投递，用于处理异步投递结果
                         this.handleExecutorService.schedule(new HandlePutResultTask(level), FIRST_DELAY_TIME, TimeUnit.MILLISECONDS);
                     }
+                    // 用于实际投递延迟消息
                     this.deliverExecutorService.schedule(new DeliverDelayedMessageTimerTask(level, offset), FIRST_DELAY_TIME, TimeUnit.MILLISECONDS);
                 }
             }
 
+            // 创建一个定时任务，每隔一定时间调用ScheduleMessageService.this.persist()方法来刷新持久化状态，以确保已处理的延迟消息状态被持久化到磁盘
             scheduledPersistService.scheduleAtFixedRate(() -> {
                 try {
                     ScheduleMessageService.this.persist();
@@ -363,7 +386,11 @@ public class ScheduleMessageService extends ConfigManager {
     }
 
     class DeliverDelayedMessageTimerTask implements Runnable {
+
+        // 延迟等级
         private final int delayLevel;
+
+        // 偏移量
         private final long offset;
 
         public DeliverDelayedMessageTimerTask(int delayLevel, long offset) {
@@ -396,16 +423,23 @@ public class ScheduleMessageService extends ConfigManager {
             return result;
         }
 
+        /**
+         * 处理定时消息的投递
+         */
         public void executeOnTimeUp() {
+
+            // 获取定时消息对应的 ConsumeQueue（消费队列）：首先，根据消息的延时级别（delayLevel）来确定需要检查的 ConsumeQueue，ConsumeQueue 用于存储定时消息的信息。
             ConsumeQueueInterface cq =
                 ScheduleMessageService.this.brokerController.getMessageStore().getConsumeQueue(TopicValidator.RMQ_SYS_SCHEDULE_TOPIC,
                     delayLevel2QueueId(delayLevel));
 
+            // 检查 ConsumeQueue 是否存在：如果获取的 ConsumeQueue 为 null，说明没有该延时级别的 ConsumeQueue，这时会设置下一次检查的时间并返回
             if (cq == null) {
                 this.scheduleNextTimerTask(this.offset, DELAY_FOR_A_WHILE);
                 return;
             }
 
+            // 迭代 ConsumeQueue：从 ConsumeQueue 的指定位置 this.offset 开始进行迭代，每次迭代获取一个 CqUnit 对象，这个对象包含了消息在 ConsumeQueue 中的位置、大小、标签等信息
             ReferredIterator<CqUnit> bufferCQ = cq.iterateFrom(this.offset);
             if (bufferCQ == null) {
                 long resetOffset;
@@ -423,12 +457,17 @@ public class ScheduleMessageService extends ConfigManager {
                 return;
             }
 
+            // 拉取消息的偏移量
             long nextOffset = this.offset;
             try {
                 while (bufferCQ.hasNext() && isStarted()) {
+                    // 消息的基本属性
                     CqUnit cqUnit = bufferCQ.next();
+                    // 消息的偏移量
                     long offsetPy = cqUnit.getPos();
+                    // 消息的大小
                     int sizePy = cqUnit.getSize();
+                    // 消息投递时的时间戳
                     long tagsCode = cqUnit.getTagsCode();
 
                     if (!cqUnit.isTagsCodeValid()) {
@@ -440,12 +479,19 @@ public class ScheduleMessageService extends ConfigManager {
                     }
 
                     long now = System.currentTimeMillis();
+
+                    // 消息应该消费的时间戳：计算规则是：消息投递时间 + 延迟等级的时间（注意各个延迟等级的时间是毫秒单位）
                     long deliverTimestamp = this.correctDeliverTimestamp(now, tagsCode);
 
                     long currOffset = cqUnit.getQueueOffset();
+
+                    // 一次拉取一条
                     assert cqUnit.getBatchNum() == 1;
+
+                    // 计算下次拉取的偏移量。 6+1=7
                     nextOffset = currOffset + cqUnit.getBatchNum();
 
+                    // 消息应该消费的时间戳 减去当前时间 如果大于0，则代表还没有到消息消费时间，继续延迟处理。
                     long countdown = deliverTimestamp - now;
                     if (countdown > 0) {
                         this.scheduleNextTimerTask(currOffset, DELAY_FOR_A_WHILE);
@@ -453,11 +499,14 @@ public class ScheduleMessageService extends ConfigManager {
                         return;
                     }
 
+                    // 到了消息应该消费的时间
+                    // 开始根据offset偏移量从commitLog查找消息
                     MessageExt msgExt = ScheduleMessageService.this.brokerController.getMessageStore().lookMessageByOffset(offsetPy, sizePy);
                     if (msgExt == null) {
                         continue;
                     }
 
+                    // 构建消息
                     MessageExtBrokerInner msgInner = ScheduleMessageService.this.messageTimeUp(msgExt);
                     if (TopicValidator.RMQ_SYS_TRANS_HALF_TOPIC.equals(msgInner.getTopic())) {
                         log.error("[BUG] the real topic of schedule msg is {}, discard the msg. msg={}",
@@ -467,11 +516,14 @@ public class ScheduleMessageService extends ConfigManager {
 
                     boolean deliverSuc;
                     if (ScheduleMessageService.this.enableAsyncDeliver) {
+                        // 异步投递消息
                         deliverSuc = this.asyncDeliver(msgInner, msgExt.getMsgId(), currOffset, offsetPy, sizePy);
                     } else {
+                        // 同步投递消息
                         deliverSuc = this.syncDeliver(msgInner, msgExt.getMsgId(), currOffset, offsetPy, sizePy);
                     }
 
+                    // 投递失败，则延迟后再次投递
                     if (!deliverSuc) {
                         this.scheduleNextTimerTask(nextOffset, DELAY_FOR_A_WHILE);
                         return;

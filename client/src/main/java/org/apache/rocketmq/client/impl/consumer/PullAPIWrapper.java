@@ -74,7 +74,9 @@ public class PullAPIWrapper {
         final SubscriptionData subscriptionData) {
         PullResultExt pullResultExt = (PullResultExt) pullResult;
 
+        // 更新下一次建议从哪台broker拉取。存储broker的信息
         this.updatePullFromWhichNode(mq, pullResultExt.getSuggestWhichBrokerId());
+
         if (PullStatus.FOUND == pullResult.getPullStatus()) {
             ByteBuffer byteBuffer = ByteBuffer.wrap(pullResultExt.getMessageBinary());
             // 转换为MessageExt
@@ -194,10 +196,12 @@ public class PullAPIWrapper {
         final CommunicationMode communicationMode,
         final PullCallback pullCallback
     ) throws MQClientException, RemotingException, MQBrokerException, InterruptedException {
-        // 从本地MQClientInstance中根据消费队列mq获取brokerName、brokerId来查找broker信息
+
+        // 根据消息队列名称 + brokerId 查找broker信息，得到broker地址,用于从哪台broker服务器拉取消息
         FindBrokerResult findBrokerResult =
             this.mQClientFactory.findBrokerAddressInSubscribe(this.mQClientFactory.getBrokerNameFromMessageQueue(mq),
                 this.recalculatePullFromWhichNode(mq), false);
+
         // 如果找不到，则更新topic信息，并再次查找
         if (null == findBrokerResult) {
             this.mQClientFactory.updateTopicRouteInfoFromNameServer(mq.getTopic());
@@ -288,6 +292,12 @@ public class PullAPIWrapper {
         );
     }
 
+    /**
+     * 计算从哪台broker拉取消息
+     *
+     * @param mq  消息队列
+     * @return  broker节点id； 通常为0主节点
+     */
     public long recalculatePullFromWhichNode(final MessageQueue mq) {
         if (this.isConnectBrokerByUser()) {
             return this.defaultBrokerId;

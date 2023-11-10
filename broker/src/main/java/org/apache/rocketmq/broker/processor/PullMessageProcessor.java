@@ -525,6 +525,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
                         // 否则，将 requestHeader 中的 maxMsgNums 设置为 1，表示只拉取一条消息
                         requestHeader.setMaxMsgNums(1);
                         if (brokerAllowFlowCtrSuspend) {  // second arrived, which will not be held
+                            // 构建PullRequest，挂起当前请求
                             PullRequest pullRequest = new PullRequest(request, channel, 1000,
                                 this.brokerController.getMessageStore().now(), requestHeader.getQueueOffset(), subscriptionData, messageFilter);
                             this.brokerController.getColdDataPullRequestHoldService().suspendColdDataReadRequest(pullRequest);
@@ -546,6 +547,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
 
         // 构建消息拉取结果
         GetMessageResult getMessageResult = null;
+        // 需要重置偏移量
         if (useResetOffsetFeature && null != resetOffset) {
             getMessageResult = new GetMessageResult();
             getMessageResult.setStatus(GetMessageStatus.OFFSET_RESET);
@@ -562,6 +564,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
             } else {
                 SubscriptionData finalSubscriptionData = subscriptionData;
                 RemotingCommand finalResponse = response;
+                // 从CommitLog中获取消息，返回的是GetMessageResult对象
                 messageStore.getMessageAsync(group, topic, queueId, requestHeader.getQueueOffset(),
                         requestHeader.getMaxMsgNums(), messageFilter)
                     .thenApply(result -> {
@@ -571,6 +574,7 @@ public class PullMessageProcessor implements NettyRequestProcessor {
                             return finalResponse;
                         }
                         brokerController.getColdDataCgCtrService().coldAcc(requestHeader.getConsumerGroup(), result.getColdDataSum());
+                        // 处理消费者拉取消息请求的核心逻辑，其中包括了处理消息拉取结果、消息发送、流量控制、消息过滤等操作
                         return pullMessageResultHandler.handle(
                             result,
                             request,

@@ -123,9 +123,13 @@ public class ConsumeQueue implements ConsumeQueueInterface, FileQueueLifeCycle {
 
     @Override
     public void recover() {
+        // 该topic下所有队列的consumequeue文件？ 还是单个队列的consumequeue文件
         final List<MappedFile> mappedFiles = this.mappedFileQueue.getMappedFiles();
         if (!mappedFiles.isEmpty()) {
 
+            // 获取所有consumeQueue的文件总数
+            // index 用于从 mappedFiles 中获取需要进行恢复的 MappedFile。如果 MappedFile 的数量足够，那么就从倒数第三个 MappedFile 开始进行恢复。
+            // 这是为了避免处理正在写入的文件，通常情况下，最后一个文件是当前正在写入的文件，不需要进行恢复
             int index = mappedFiles.size() - 3;
             if (index < 0) {
                 index = 0;
@@ -133,17 +137,26 @@ public class ConsumeQueue implements ConsumeQueueInterface, FileQueueLifeCycle {
 
             int mappedFileSizeLogics = this.mappedFileSize;
             MappedFile mappedFile = mappedFiles.get(index);
+            // 获取consumequeue文件对象，构建一个可以读取8字节的字符缓存区，这样可以每次读取8字节，正好可以到commitlog的offset
+            // consume的文件内容结果：commit log offset(8字节) + body size(4字节) + tag hashcode(8字节)
             ByteBuffer byteBuffer = mappedFile.sliceByteBuffer();
             long processOffset = mappedFile.getFileFromOffset();
+            // 设置读取的偏移量位置
             long mappedFileOffset = 0;
             long maxExtAddr = 1;
             while (true) {
                 for (int i = 0; i < mappedFileSizeLogics; i += CQ_STORE_UNIT_SIZE) {
+                    // 读取前8个字节。commit log offset
                     long offset = byteBuffer.getLong();
+                    // 读取中间4个字节。消息大小
                     int size = byteBuffer.getInt();
+                    // 读取后面8个字节。tag的hashcode
                     long tagsCode = byteBuffer.getLong();
 
+                    // 如果前8个字节大于等于0，则代表是一个有效的消息内容，否则是占位字符。
+                    // 因为consumequeue在创建队列中，会自动将文件设置为5860kb，也就是6000000字节，存储的每条内容长度为20，所以可以存储6000000/20=300000条目
                     if (offset >= 0 && size > 0) {
+                        // 成功读取可用的commit log offset之后，将偏移量位置加20
                         mappedFileOffset = i + CQ_STORE_UNIT_SIZE;
                         this.setMaxPhysicOffset(offset + size);
                         if (isExtAddr(tagsCode)) {
@@ -156,18 +169,28 @@ public class ConsumeQueue implements ConsumeQueueInterface, FileQueueLifeCycle {
                     }
                 }
 
+                // 这里针对的是存在多个consumequeue文件时，是否全部读取完毕，如果存在两个，当读取完一个之后，继续读取下一个
                 if (mappedFileOffset == mappedFileSizeLogics) {
                     index++;
+                    // 如果已经处理完所有文件，说明所有 Consume Queue 文件已经恢复完毕，记录一条日志，然后跳出循环
                     if (index >= mappedFiles.size()) {
 
                         log.info("recover last consume queue file over, last mapped file "
                             + mappedFile.getFileName());
                         break;
                     } else {
+                        // 否则，准备处理下一个 mappedFile
+
+                        // 获取下一个 mappedFile
                         mappedFile = mappedFiles.get(index);
+                        // 创建一个新的 byteBuffer 以准备读取下一个文件的内容
                         byteBuffer = mappedFile.sliceByteBuffer();
+                        // 更新 processOffset 为当前 mappedFile 的文件起始偏移量
                         processOffset = mappedFile.getFileFromOffset();
+                        // 重置 mappedFileOffset 为0，表示从下一个文件的开头开始处理
                         mappedFileOffset = 0;
+
+                        // 记录一条日志，指示正在恢复下一个 Consume Queue 文件
                         log.info("recover next consume queue file, " + mappedFile.getFileName());
                     }
                 } else {
@@ -177,11 +200,16 @@ public class ConsumeQueue implements ConsumeQueueInterface, FileQueueLifeCycle {
                 }
             }
 
+            // 设置对应的偏移量信息
             processOffset += mappedFileOffset;
+            // 设置已经持久化到磁盘的消息的偏移量
             this.mappedFileQueue.setFlushedWhere(processOffset);
+            // 设置已经成功提交的消息的偏移量
             this.mappedFileQueue.setCommittedWhere(processOffset);
+            // 表示已经处理到的位置，而这个方法会清除已处理的位置之前的数据，以减少文件大小，从而释放磁盘空间
             this.mappedFileQueue.truncateDirtyFiles(processOffset);
 
+            // 恢复consumequeue扩展文件信息，这个无需关系。主要是一些扩展数据、统计信息等等
             if (isExtReadEnable()) {
                 this.consumeQueueExt.recover();
                 log.info("Truncate consume queue extend file by max {}", maxExtAddr);

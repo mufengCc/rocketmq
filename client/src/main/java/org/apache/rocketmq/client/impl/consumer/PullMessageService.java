@@ -16,17 +16,19 @@
  */
 package org.apache.rocketmq.client.impl.consumer;
 
-import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import org.apache.rocketmq.client.impl.factory.MQClientInstance;
 import org.apache.rocketmq.common.ServiceThread;
 import org.apache.rocketmq.common.ThreadFactoryImpl;
+import org.apache.rocketmq.common.message.MessageQueue;
 import org.apache.rocketmq.common.message.MessageRequestMode;
 import org.apache.rocketmq.common.utils.ThreadUtils;
 import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class PullMessageService extends ServiceThread {
     private final Logger logger = LoggerFactory.getLogger(PullMessageService.class);
@@ -34,17 +36,24 @@ public class PullMessageService extends ServiceThread {
 
     private final MQClientInstance mQClientFactory;
     private final ScheduledExecutorService scheduledExecutorService = Executors
-        .newSingleThreadScheduledExecutor(new ThreadFactoryImpl("PullMessageServiceScheduledThread"));
+            .newSingleThreadScheduledExecutor(new ThreadFactoryImpl("PullMessageServiceScheduledThread"));
 
     public PullMessageService(MQClientInstance mQClientFactory) {
         this.mQClientFactory = mQClientFactory;
     }
 
+    /**
+     * 启动异步线程，将拉取消息请求放入队列
+     *
+     * @param pullRequest
+     * @param timeDelay
+     */
     public void executePullRequestLater(final PullRequest pullRequest, final long timeDelay) {
         if (!isStopped()) {
             this.scheduledExecutorService.schedule(new Runnable() {
                 @Override
                 public void run() {
+                    // 将拉取消息请求-放入队列
                     PullMessageService.this.executePullRequestImmediately(pullRequest);
                 }
             }, timeDelay, TimeUnit.MILLISECONDS);
@@ -55,6 +64,8 @@ public class PullMessageService extends ServiceThread {
 
     public void executePullRequestImmediately(final PullRequest pullRequest) {
         try {
+            MessageQueue messageQueue = pullRequest.getMessageQueue();
+            System.out.println("将PullRequest请求放入Queue队列中, topic:" + messageQueue.getTopic() + ",queueId:" + messageQueue.getQueueId());
             this.messageRequestQueue.put(pullRequest);
         } catch (InterruptedException e) {
             logger.error("executePullRequestImmediately pullRequestQueue.put", e);
@@ -96,6 +107,7 @@ public class PullMessageService extends ServiceThread {
 
     /**
      * 拉取消息的实现
+     *
      * @param pullRequest
      */
     private void pullMessage(final PullRequest pullRequest) {
@@ -121,6 +133,11 @@ public class PullMessageService extends ServiceThread {
     @Override
     public void run() {
         logger.info(this.getServiceName() + " service started");
+        Thread thread1 = Thread.currentThread();
+        MessageRequest peek = messageRequestQueue.peek();
+        PullRequest pullRequest1 = (PullRequest) peek;
+        ;
+        System.out.println("PullMessageService->启动；线程信息："  + thread1.getName() + "-" + thread1.getId());
 
         while (!this.isStopped()) {
             try {
@@ -129,6 +146,8 @@ public class PullMessageService extends ServiceThread {
                 if (messageRequest.getMessageRequestMode() == MessageRequestMode.POP) {
                     this.popMessage((PopRequest) messageRequest);
                 } else {
+                    PullRequest pullRequest = (PullRequest) messageRequest;
+                    System.out.println("PullMessageService->从队列中获取请求，topic:"+ pullRequest.getMessageQueue().getTopic() +", 线程信息：{}" + thread1.getName() + "-" + thread1.getId());
                     this.pullMessage((PullRequest) messageRequest);
                 }
             } catch (InterruptedException ignored) {

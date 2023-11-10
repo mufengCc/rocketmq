@@ -22,9 +22,14 @@ import org.apache.rocketmq.common.message.MessageQueue;
 
 /**
  * Average Hashing queue algorithm
+ * 平均哈希队列算法
  */
 public class AllocateMessageQueueAveragely extends AbstractAllocateMessageQueueStrategy {
 
+    /**
+     * 这个算法的目的是确保不同消费者均匀地分配消息队列，以便实现负载均衡。
+     * 平均哈希队列算法是一种简单而有效的算法，能够确保消息队列在消费者之间均匀分布，避免某个消费者积压过多消息或某个消息队列没有被消费
+     */
     @Override
     public List<MessageQueue> allocate(String consumerGroup, String currentCID, List<MessageQueue> mqAll,
         List<String> cidAll) {

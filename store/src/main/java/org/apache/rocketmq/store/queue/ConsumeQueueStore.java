@@ -109,6 +109,11 @@ public class ConsumeQueueStore {
         return cqLoadResult && bcqLoadResult;
     }
 
+    /**
+     * 加载 ConsumeQueue 数据的逻辑
+     * ConsumeQueue 用于存储消息队列的消费进度，它会以不同的文件和目录来保存不同的主题和队列的消费信息
+     * @return
+     */
     private boolean loadConsumeQueues(String storePath, CQType cqType) {
         File dirLogic = new File(storePath);
         File[] fileTopicList = dirLogic.listFiles();
@@ -129,8 +134,11 @@ public class ConsumeQueueStore {
 
                         queueTypeShouldBe(topic, cqType);
 
+                        // 创建ConsumeQueueInterface对象，用于管理和存储特定主题和队列的消费进度
                         ConsumeQueueInterface logic = createConsumeQueueByType(cqType, topic, queueId, storePath);
                         this.putConsumeQueue(topic, queueId, logic);
+
+                        // 真正加载文件的入口-将consumeQueue数据文件加载到内存中
                         if (!this.load(logic)) {
                             return false;
                         }
@@ -315,6 +323,7 @@ public class ConsumeQueueStore {
     }
 
     private ConsumeQueueInterface doFindOrCreateConsumeQueue(String topic, int queueId) {
+        // 对应的偏移量存储在这里
         ConcurrentMap<Integer, ConsumeQueueInterface> map = consumeQueueTable.get(topic);
         if (null == map) {
             ConcurrentMap<Integer, ConsumeQueueInterface> newMap = new ConcurrentHashMap<>(128);
@@ -412,6 +421,9 @@ public class ConsumeQueueStore {
         }
     }
 
+    /**
+     * 恢复并更新各个主题和队列的消费偏移量信息，确保在 Broker 重新启动后，消费者可以从正确的位置继续拉取消息
+     */
     public void recoverOffsetTable(long minPhyOffset) {
         ConcurrentMap<String, Long> cqOffsetTable = new ConcurrentHashMap<>(1024);
         ConcurrentMap<String, Long> bcqOffsetTable = new ConcurrentHashMap<>(1024);

@@ -41,17 +41,40 @@ public class MappedFileQueue implements Swappable {
     private static final Logger log = LoggerFactory.getLogger(LoggerName.STORE_LOGGER_NAME);
     private static final Logger LOG_ERROR = LoggerFactory.getLogger(LoggerName.STORE_ERROR_LOGGER_NAME);
 
+    /**
+     *  存储目录
+     */
     protected final String storePath;
 
+    /**
+     *  单个文件的存储大小
+     */
     protected final int mappedFileSize;
 
+    /**
+     *  MappedFile 集合
+     */
     protected final CopyOnWriteArrayList<MappedFile> mappedFiles = new CopyOnWriteArrayList<>();
 
+    /**
+     *  创建 MappedFile 服务类
+     */
     protected final AllocateMappedFileService allocateMappedFileService;
 
+    /**
+     *  当前刷盘指针，表示该指针之前的所有数据全部持久化至磁盘
+     */
     protected long flushedWhere = 0;
+
+    /**
+     *  当前数据提交指针，内存中 ByteBuffer 当前的写指针该值大于、等于flushedWhere。
+     * 接下来重点分析根据不同维度查找
+     */
     protected long committedWhere = 0;
 
+    /**
+     * 当前数据存储时间
+     */
     protected volatile long storeTimestamp = 0;
 
     public MappedFileQueue(final String storePath, int mappedFileSize,
@@ -234,6 +257,9 @@ public class MappedFileQueue implements Swappable {
     }
 
 
+    /**
+     * 加载指定路径下，所有的文件
+     */
     public boolean load() {
         File dir = new File(this.storePath);
         File[] ls = dir.listFiles();
@@ -243,6 +269,9 @@ public class MappedFileQueue implements Swappable {
         return true;
     }
 
+    /**
+     * 加载consumeQueue文件，并设置默认大小为6000000
+     */
     public boolean doLoad(List<File> files) {
         // ascending order
         files.sort(Comparator.comparing(File::getName));
@@ -266,6 +295,8 @@ public class MappedFileQueue implements Swappable {
             }
 
             try {
+
+                // 创建MappedFile文件对象，默认大小为6000000比特
                 MappedFile mappedFile = new DefaultMappedFile(file.getPath(), mappedFileSize);
 
                 mappedFile.setWrotePosition(this.mappedFileSize);
@@ -614,13 +645,28 @@ public class MappedFileQueue implements Swappable {
         return deleteCount;
     }
 
+    /**
+     * 作用是在 CommitLog 中执行刷盘操作。它找到要刷盘的 MappedFile，执行刷盘，更新已刷写的位置，然后检查刷盘是否成功。在非强制刷盘的情况下，还会重置 MappedFile 的存储时间戳
+     *
+     * @param flushLeastPages   刷盘的页数
+     * @return  刷盘是否成功
+     */
     public boolean flush(final int flushLeastPages) {
         boolean result = true;
+
+        // 根据已刷写的位置查找要进行刷盘的 MappedFile 对象。如果 this.getFlushedWhere() 为 0（表示还没有刷写过数据），则查找最新的 MappedFile
         MappedFile mappedFile = this.findMappedFileByOffset(this.getFlushedWhere(), this.getFlushedWhere() == 0);
         if (mappedFile != null) {
             long tmpTimeStamp = mappedFile.getStoreTimestamp();
+
+            // 执行实际的刷盘操作，将数据刷写到磁盘。flushLeastPages 参数表示最少需要刷写的物理队列页数。
+            //   返回的是刷盘操作完成后，当前文件的偏移量
             int offset = mappedFile.flush(flushLeastPages);
+
+            // 计算刷盘后的位置，即当前文件的偏移量加上刷盘操作完成后的偏移量
             long where = mappedFile.getFileFromOffset() + offset;
+
+            // 检查刷盘后的位置是否与 CommitLog 中已刷写的位置（this.getFlushedWhere()）相同。如果相同，表示刷盘操作成功，将 result 设置为 true，否则设置为 false。
             result = where == this.getFlushedWhere();
             this.setFlushedWhere(where);
             if (0 == flushLeastPages) {
@@ -628,6 +674,7 @@ public class MappedFileQueue implements Swappable {
             }
         }
 
+        // 返回刷盘操作是否成功的布尔值
         return result;
     }
 

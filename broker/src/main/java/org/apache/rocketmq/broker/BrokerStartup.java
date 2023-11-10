@@ -46,7 +46,10 @@ public class BrokerStartup {
     public static Logger log;
     public static final SystemConfigFileHelper CONFIG_FILE_HELPER = new SystemConfigFileHelper();
 
+    // 执行main()方法，启动broker
     public static void main(String[] args) {
+        // 先初始化核心的brokerController
+        // 开启broker
         start(createBrokerController(args));
     }
 
@@ -204,6 +207,7 @@ public class BrokerStartup {
         MixAll.printObjectProperties(log, nettyClientConfig);
         MixAll.printObjectProperties(log, messageStoreConfig);
 
+        // 初始化brokerController 控制器
         final BrokerController controller = new BrokerController(
             brokerConfig, nettyServerConfig, nettyClientConfig, messageStoreConfig);
 
@@ -234,9 +238,15 @@ public class BrokerStartup {
         };
     }
 
+    /**
+     * 初始化BrokerController对象
+     * 初始化对应的生产者
+     */
     public static BrokerController createBrokerController(String[] args) {
         try {
+            // 创建BrokerController对象，并进行初始化--初始化很多对象，很复杂
             BrokerController controller = buildBrokerController(args);
+            // 初始化对应的生产者 与消费者 信息--主要关注这里
             boolean initResult = controller.initialize();
             if (!initResult) {
                 controller.shutdown();

@@ -58,7 +58,8 @@ public class RemoteBrokerOffsetStore implements OffsetStore {
     }
 
     /**
-     * 更新消息进度，每5s执行一次。向Broker发送请求
+     * 将消费过的offset放入offsetTable中
+     * 之后内部会有定时任务每5s执行一次向Broker发送同步消费进度请求
      */
     @Override
     public void updateOffset(MessageQueue mq, long offset, boolean increaseOnly) {
@@ -115,6 +116,9 @@ public class RemoteBrokerOffsetStore implements OffsetStore {
         return -3;
     }
 
+    /**
+     * 将offsetTable中的数据，持久化到broker
+     */
     @Override
     public void persistAll(Set<MessageQueue> mqs) {
         if (null == mqs || mqs.isEmpty())
@@ -128,6 +132,7 @@ public class RemoteBrokerOffsetStore implements OffsetStore {
             if (offset != null) {
                 if (mqs.contains(mq)) {
                     try {
+                        // 发起netty请求，同步offset偏移量
                         this.updateConsumeOffsetToBroker(mq, offset.get());
                         log.info("[persistAll] Group: {} ClientId: {} updateConsumeOffsetToBroker {} {}",
                                 this.groupName,
@@ -199,6 +204,9 @@ public class RemoteBrokerOffsetStore implements OffsetStore {
 
     /**
      * Update the Consumer Offset synchronously, once the Master is off, updated to Slave, here need to be optimized.
+     */
+    /**
+     * 向broker发起netty请求，更新消费者的消费进度（offset）,确保消费者能够从正确的位置开始消费消息
      */
     @Override
     public void updateConsumeOffsetToBroker(MessageQueue mq, long offset, boolean isOneway) throws RemotingException,

@@ -21,6 +21,10 @@ import org.apache.rocketmq.common.ServiceThread;
 import org.apache.rocketmq.logging.org.slf4j.Logger;
 import org.apache.rocketmq.logging.org.slf4j.LoggerFactory;
 
+/**
+ * 负载均衡服务
+ * 每20s执行一次，通过topic与队列的关系，构建消息拉取队列，假如到PullMessageService中的messageRequestQueue，从而请求broker拉取消息
+ */
 public class RebalanceService extends ServiceThread {
     private static long waitInterval =
             Long.parseLong(System.getProperty(
@@ -38,12 +42,12 @@ public class RebalanceService extends ServiceThread {
 
         while (!this.isStopped()) {
             long begin = System.currentTimeMillis();
-            System.out.println("开始--" + System.currentTimeMillis());
+            Thread thread1 = Thread.currentThread();
+            System.out.println("开始负载均衡；线程信息：{}" + thread1.getName() + "-" + thread1.getId());
             // 等待20秒中
             this.waitForRunning(waitInterval);
             // 自旋的方式进行负载均衡处理。将拉取消息请求放入队列-开始入口
             this.mqClientFactory.doRebalance();
-            System.out.println("结束--" + (System.currentTimeMillis() - begin));
         }
 
         log.info(this.getServiceName() + " service end");

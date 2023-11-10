@@ -75,18 +75,8 @@ public class DefaultPullMessageResultHandler implements PullMessageResultHandler
     }
 
     /**
-     * 处理消费者拉取消息请求的核心逻辑，其中包括了处理消息拉取结果、消息发送、流量控制、消息过滤等操作
-     * @param getMessageResult store result
-     * @param request request
-     * @param requestHeader request header
-     * @param channel channel
-     * @param subscriptionData sub data
-     * @param subscriptionGroupConfig sub config
-     * @param brokerAllowSuspend brokerAllowSuspend
-     * @param messageFilter store message filter
-     * @param response response
-     * @param mappingContext
-     * @return
+     * broker端处理消费者拉取消息请求的核心逻辑，
+     * 其中包括了处理消息拉取结果、消息发送、流量控制、消息过滤、没有消息时挂起请求等操作
      */
     @Override
     public RemotingCommand handle(final GetMessageResult getMessageResult,
@@ -153,6 +143,8 @@ public class DefaultPullMessageResultHandler implements PullMessageResultHandler
                     return null;
                 }
 
+                // 成功拉取到消息时，将消息内容通过Netty响应给客户端
+                // 如果是堆内存存储
                 if (this.brokerController.getBrokerConfig().isTransferMsgByHeap()) {
 
                     final long beginTimeMills = this.brokerController.getMessageStore().now();
@@ -162,14 +154,21 @@ public class DefaultPullMessageResultHandler implements PullMessageResultHandler
                         (int) (this.brokerController.getMessageStore().now() - beginTimeMills));
                     response.setBody(r);
                     return response;
+
                 } else {
+                    // 不使用堆内存传输消息
                     try {
+                        // 构建Netty的FileRegion对象，用于传输消息。其中消息内容是在 getMessageResult 对象中
                         FileRegion fileRegion =
                             new ManyMessageTransfer(response.encodeHeader(getMessageResult.getBufferTotalSize()), getMessageResult);
                         RemotingCommand finalResponse = response;
+                        // 将消息内容写入并刷新到网络通道中，以便将消息内容发送给消费者
                         channel.writeAndFlush(fileRegion)
+                                // 添加了一个监听器，用于在操作完成时执行特定的操作
                             .addListener((ChannelFutureListener) future -> {
+                                // 释放消息内容所占用的资源
                                 getMessageResult.release();
+                                // 日志记录
                                 Attributes attributes = RemotingMetricsManager.newAttributesBuilder()
                                     .put(LABEL_REQUEST_CODE, RemotingHelper.getRequestCodeDesc(request.getCode()))
                                     .put(LABEL_RESPONSE_CODE, RemotingHelper.getResponseCodeDesc(finalResponse.getCode()))
@@ -188,11 +187,15 @@ public class DefaultPullMessageResultHandler implements PullMessageResultHandler
                 }
                 // 未找到消息。如果允许挂起并且请求中带有挂起标志，将创建一个 PullRequest 并挂起该请求，等待后续消息到达
             case ResponseCode.PULL_NOT_FOUND:
+                // 消费者拉取请求的是否有挂起标志
                 final boolean hasSuspendFlag = PullSysFlag.hasSuspendFlag(requestHeader.getSysFlag());
+                // 消费者拉取请求的Broker挂起超时时间，默认15s
                 final long suspendTimeoutMillisLong = hasSuspendFlag ? requestHeader.getSuspendTimeoutMillis() : 0;
 
+                // Broker是否支持挂起 + 消费者拉取请求的是否有挂起标志
                 if (brokerAllowSuspend && hasSuspendFlag) {
                     long pollingTimeMills = suspendTimeoutMillisLong;
+                    // Broker是否开启长轮询挂起模式，默认超时1s
                     if (!this.brokerController.getBrokerConfig().isLongPollingEnable()) {
                         pollingTimeMills = this.brokerController.getBrokerConfig().getShortPollingTimeMills();
                     }
@@ -200,8 +203,10 @@ public class DefaultPullMessageResultHandler implements PullMessageResultHandler
                     String topic = requestHeader.getTopic();
                     long offset = requestHeader.getQueueOffset();
                     int queueId = requestHeader.getQueueId();
+                    // 再次组装消息拉取请求
                     PullRequest pullRequest = new PullRequest(request, channel, pollingTimeMills,
                         this.brokerController.getMessageStore().now(), offset, subscriptionData, messageFilter);
+                    // 提交到PullRequestHoldService线程
                     this.brokerController.getPullRequestHoldService().suspendPullRequest(topic, queueId, pullRequest);
                     return null;
                 }

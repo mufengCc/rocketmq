@@ -585,13 +585,20 @@ public abstract class NettyRemotingAbstract {
         }
     }
 
+    /**
+     * 向broker发起单向请求invokeOneway，无需阻塞等待broker的响应，之后会异步收到响应处理。类似Ajax
+     */
     public void invokeOnewayImpl(final Channel channel, final RemotingCommand request, final long timeoutMillis)
         throws InterruptedException, RemotingTooMuchRequestException, RemotingTimeoutException, RemotingSendRequestException {
+        // 标记单向的请求
         request.markOnewayRPC();
         boolean acquired = this.semaphoreOneway.tryAcquire(timeoutMillis, TimeUnit.MILLISECONDS);
         if (acquired) {
             final SemaphoreReleaseOnlyOnce once = new SemaphoreReleaseOnlyOnce(this.semaphoreOneway);
             try {
+                // 发起请求成功
+                // addListener 方法添加了一个通道监听器（ChannelFutureListener）。这个监听器用于异步处理发送请求的结果
+                // 然后，通过f.isSuccess()检查通道是否成功发送请求
                 channel.writeAndFlush(request).addListener((ChannelFutureListener) f -> {
                     once.release();
                     if (!f.isSuccess()) {

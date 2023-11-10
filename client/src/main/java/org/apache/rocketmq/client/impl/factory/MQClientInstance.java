@@ -77,6 +77,9 @@ public class MQClientInstance {
     /**
      * The container of the consumer in the current client. The key is the name of consumerGroup.
      */
+    /**
+     * 当前客户端中使用者的容器。关键是consumerGroup的名称。
+     */
     private final ConcurrentMap<String, MQConsumerInner> consumerTable = new ConcurrentHashMap<>();
 
     /**
@@ -674,20 +677,27 @@ public class MQClientInstance {
             if (this.lockNamesrv.tryLock(LOCK_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
                 try {
                     TopicRouteData topicRouteData;
+                    // 如果采用默认主题查询，通常为false，不会执行这个逻辑
                     if (isDefault && defaultMQProducer != null) {
+                        // 查询路由信息
                         topicRouteData = this.mQClientAPIImpl.getDefaultTopicRouteInfoFromNameServer(clientConfig.getMqClientApiTimeout());
                         if (topicRouteData != null) {
                             for (QueueData data : topicRouteData.getQueueDatas()) {
+                                // 获取队列数量
                                 int queueNums = Math.min(defaultMQProducer.getDefaultTopicQueueNums(), data.getReadQueueNums());
                                 data.setReadQueueNums(queueNums);
                                 data.setWriteQueueNums(queueNums);
                             }
                         }
                     } else {
+                        // 根据topic主题查询
                         topicRouteData = this.mQClientAPIImpl.getTopicRouteInfoFromNameServer(topic, clientConfig.getMqClientApiTimeout());
                     }
+                    // 找到路由信息，则与本地缓存中的路由信息进行比对，判断路由信息是否发生了改变，如果发生了改变，则返回false
                     if (topicRouteData != null) {
+                        // 根据topic名称，从 topicRouteTable 中，获取路由信息，首次执行为null
                         TopicRouteData old = this.topicRouteTable.get(topic);
+                        // 排序并比较
                         boolean changed = topicRouteData.topicRouteDataChanged(old);
                         if (!changed) {
                             changed = this.isNeedUpdateTopicRouteInfo(topic);
@@ -695,13 +705,16 @@ public class MQClientInstance {
                             log.info("the topic[{}] route info changed, old[{}] ,new[{}]", topic, old, topicRouteData);
                         }
 
+                        // 首次默认为true
                         if (changed) {
 
+                            // 将Broker数据存储到 brokerAddrTable map中。 注意：每间隔30s，会移除无效的broker数据。参考：MQClientInstance.cleanOfflineBroker();
                             for (BrokerData bd : topicRouteData.getBrokerDatas()) {
                                 this.brokerAddrTable.put(bd.getBrokerName(), bd.getBrokerAddrs());
                             }
 
                             // Update endpoint map
+                            // 更新暴露点
                             {
                                 ConcurrentMap<MessageQueue, String> mqEndPoints = topicRouteData2EndpointsForStaticTopic(topic, topicRouteData);
                                 if (!mqEndPoints.isEmpty()) {
@@ -710,27 +723,33 @@ public class MQClientInstance {
                             }
 
                             // Update Pub info
+                            // 更新topic的发布信息
                             {
                                 TopicPublishInfo publishInfo = topicRouteData2TopicPublishInfo(topic, topicRouteData);
                                 publishInfo.setHaveTopicRouterInfo(true);
                                 for (Entry<String, MQProducerInner> entry : this.producerTable.entrySet()) {
                                     MQProducerInner impl = entry.getValue();
                                     if (impl != null) {
+                                        // 将数据存储在 topicPublishInfoTable map中。 当发送消息时，根据topic获取发布信息
                                         impl.updateTopicPublishInfo(topic, publishInfo);
                                     }
                                 }
                             }
 
                             // Update sub info
+                            // 更新topic订阅信息
                             if (!consumerTable.isEmpty()) {
                                 Set<MessageQueue> subscribeInfo = topicRouteData2TopicSubscribeInfo(topic, topicRouteData);
                                 for (Entry<String, MQConsumerInner> entry : this.consumerTable.entrySet()) {
                                     MQConsumerInner impl = entry.getValue();
                                     if (impl != null) {
+                                        // 将数据存储在 topicSubscribeInfoTable map中
                                         impl.updateTopicSubscribeInfo(topic, subscribeInfo);
                                     }
                                 }
                             }
+
+                            // 这里才会将topic路由信息，放入到topicRouteTable中
                             TopicRouteData cloneTopicRouteData = new TopicRouteData(topicRouteData);
                             log.info("topicRouteTable.put. Topic = {}, TopicRouteData[{}]", topic, cloneTopicRouteData);
                             this.topicRouteTable.put(topic, cloneTopicRouteData);
@@ -1035,6 +1054,14 @@ public class MQClientInstance {
         return null;
     }
 
+    /**
+     * 获取broker地址信息
+     *
+     * @param brokerName    broker名称
+     * @param brokerId      brokerId；0主、1从
+     * @param onlyThisBroker    是否必须返回与brokerId的broker对应的服务器信息
+     * @return
+     */
     public FindBrokerResult findBrokerAddressInSubscribe(
         final String brokerName,
         final long brokerId,
@@ -1044,15 +1071,22 @@ public class MQClientInstance {
             return null;
         }
         String brokerAddr = null;
+
+        // 是否从节点
         boolean slave = false;
+        // 是否找到
         boolean found = false;
 
+        // brokerAddrTable中存储着所有broker地址信息
         HashMap<Long/* brokerId */, String/* address */> map = this.brokerAddrTable.get(brokerName);
         if (map != null && !map.isEmpty()) {
+
+            // 根据brokerId，获取broker地址信息。 brokerId通常为0
             brokerAddr = map.get(brokerId);
             slave = brokerId != MixAll.MASTER_ID;
             found = brokerAddr != null;
 
+            // 如果没找到且是从节点，则将brokerId加1，再次获取broker信息
             if (!found && slave) {
                 brokerAddr = map.get(brokerId + 1);
                 found = brokerAddr != null;
@@ -1066,6 +1100,7 @@ public class MQClientInstance {
             }
         }
 
+        // 找到了，需要设置节点属性是否是slave。
         if (found) {
             return new FindBrokerResult(brokerAddr, slave, findBrokerVersion(brokerName, brokerAddr));
         }
